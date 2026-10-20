@@ -1,0 +1,1107 @@
+{
+  "paths": {
+    "/api/auth/init": {
+      "post": {
+        "tags": ["auth"],
+        "summary": "首次设置管理员密码",
+        "description": "免鉴权接口。仅在管理员密码尚未设置时可用,用于 /setup 首次初始化流程。密码要求至少 8 个字符(按 Unicode 字符数)、不超过 72 字节(bcrypt 硬限制)。成功后直接签发 7 天有效期的 HS256 JWT。「仅首次可设」最终由数据库主键约束保证,并发竞态时返回 403。",
+        "operationId": "authInit",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/AuthInitRequest"}
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "密码设置成功,返回 JWT",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/TokenResponse"}
+              }
+            }
+          },
+          "400": {
+            "description": "密码为空、请求格式错误或密码长度不满足要求(至少 8 位、不超过 72 字节)",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "403": {
+            "description": "密码已设置(仅首次可初始化)",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "500": {
+            "description": "密码加密失败、保存失败或 token 生成失败",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "503": {
+            "description": "数据源(PostgreSQL)暂不可用或未连接",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      }
+    },
+    "/api/auth/login": {
+      "post": {
+        "tags": ["auth"],
+        "summary": "管理员登录获取 JWT",
+        "description": "免鉴权接口。用户名固定为 ARTEX,密码为初始化时设置的 bcrypt 哈希对应明文。校验通过后签发 7 天有效期的 HS256 JWT,后续请求以 Authorization: Bearer 携带。密码尚未初始化时返回 403 提示先设置密码。",
+        "operationId": "authLogin",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/AuthLoginRequest"}
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "登录成功,返回 JWT",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/TokenResponse"}
+              }
+            }
+          },
+          "400": {
+            "description": "请求格式错误(JSON 解析失败)",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "401": {
+            "description": "用户名或密码错误",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "403": {
+            "description": "密码未初始化,请先设置密码",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "500": {
+            "description": "token 生成失败",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "503": {
+            "description": "数据源(PostgreSQL)暂不可用或未连接",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      }
+    },
+    "/api/auth/change-password": {
+      "post": {
+        "tags": ["auth"],
+        "summary": "修改管理员密码",
+        "description": "路由本身在免鉴权前缀下,但 handler 内部要求同时持有有效 JWT(Authorization: Bearer / artex_token cookie / ?token= 均可)与当前密码。新密码规则与初始化一致(至少 8 字符、不超过 72 字节)。修改成功后旧 token 不失效(JWT 密钥不变),前端应重新登录。",
+        "operationId": "authChangePassword",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/AuthChangePasswordRequest"}
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "修改成功",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/OkResponse"}
+              }
+            }
+          },
+          "400": {
+            "description": "请求格式错误、新密码为空或长度不满足要求",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "401": {
+            "description": "未携带有效 token,或当前密码错误",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "403": {
+            "description": "密码未初始化,请先设置密码",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "500": {
+            "description": "密码加密失败或保存失败",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "503": {
+            "description": "数据源(PostgreSQL)暂不可用或未连接",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      }
+    },
+    "/api/auth/status": {
+      "get": {
+        "tags": ["auth"],
+        "summary": "查询密码初始化状态",
+        "description": "免鉴权接口。返回管理员密码是否已初始化,前端据此决定展示登录页还是 /setup 初始化页。数据源读取失败时返回 503 而非 initialized:false,避免把数据库故障误导成「未设置密码」而放行覆盖已有密码。",
+        "operationId": "authStatus",
+        "responses": {
+          "200": {
+            "description": "初始化状态",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/AuthStatusResponse"}
+              }
+            }
+          },
+          "503": {
+            "description": "数据源(PostgreSQL)暂不可用或未连接",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      }
+    },
+    "/api/health": {
+      "get": {
+        "tags": ["system"],
+        "summary": "健康检查",
+        "description": "免鉴权接口(与 /api/auth/* 一同豁免 JWT)。返回服务存活状态与服务版本号,不做数据库等依赖探测。",
+        "operationId": "getHealth",
+        "responses": {
+          "200": {
+            "description": "服务存活",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/HealthResponse"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/stats": {
+      "get": {
+        "tags": ["system"],
+        "summary": "仪表盘总览统计",
+        "description": "返回全局统计(LLM 是否已配置、流量抓包条数、资产总量及分类计数)以及任务级运行状态。?task= 为空或「active」时跟随当前活跃任务;传具体任务 ID 则绑定该任务(详情页不随全局切换而漂移);ID 不存在时返回 404。无任务时仅返回全局字段。engine_mode 取值:exploring(有进行中 LLM 调用)/ paused(已暂停)/ stalled(运行中但超过 120 秒无心跳与 LLM 调用)/ idle(空闲)。stalled 判定:running 且无活跃 LLM 调用且存在 running 状态意图且距最后活动超过 120 秒。",
+        "operationId": "getStats",
+        "parameters": [
+          {
+            "name": "task",
+            "in": "query",
+            "required": false,
+            "description": "任务 ID;空串或「active」表示当前活跃任务;传具体 ID 时绑定该任务,不存在则 404",
+            "schema": {"type": "string"}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "统计信息;有任务时额外包含 exploration 与 active_task 字段",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/StatsResponse"}
+              }
+            }
+          },
+          "404": {
+            "description": "指定的 task 不存在",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      }
+    },
+    "/api/logs": {
+      "get": {
+        "tags": ["logs"],
+        "summary": "拉取近期后端日志",
+        "description": "从内存环形缓冲(容量 3000 行)返回 seq 大于 since 的日志行,按时间升序(最新在最后),同时返回当前游标 cursor(最新 seq),供下次增量拉取或接入 SSE 使用。",
+        "operationId": "getLogs",
+        "parameters": [
+          {
+            "name": "since",
+            "in": "query",
+            "required": false,
+            "description": "游标;只返回 seq 大于该值的行,默认 0(全量)",
+            "schema": {"type": "integer", "format": "int64", "default": 0}
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "最多返回行数,默认 500;超过缓冲容量(3000)时按容量截断",
+            "schema": {"type": "integer", "default": 500}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "日志行列表与最新游标",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/LogsResponse"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/logs/history": {
+      "get": {
+        "tags": ["logs"],
+        "summary": "翻页查询历史日志(数据库)",
+        "description": "从 server_logs 表返回早于指定 db_id 的更早日志,用于向更早方向翻页。未给 before(或 ≤0)时从最新记录开始返回(等价于环形缓冲恢复后的初始视图)。PostgreSQL 未连接时返回空列表。has_more 为 true 表示可能还有更早日志(返回行数达到 limit 时置 true)。",
+        "operationId": "getLogsHistory",
+        "parameters": [
+          {
+            "name": "before",
+            "in": "query",
+            "required": false,
+            "description": "server_logs 表主键 db_id;返回该值之前的更早日志,默认 0 表示从最新开始",
+            "schema": {"type": "integer", "format": "int64", "default": 0}
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "最多返回行数,默认 200,服务端上限 500",
+            "schema": {"type": "integer", "default": 200, "maximum": 500}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "历史日志行列表与是否还有更早记录",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/LogsHistoryResponse"}
+              }
+            }
+          },
+          "500": {
+            "description": "数据库查询失败",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      }
+    },
+    "/api/logs/stream": {
+      "get": {
+        "tags": ["logs"],
+        "summary": "后端日志实时 SSE 流",
+        "description": "SSE 实时日志流。连接后先重放内存环形缓冲中 seq 大于 ?since= 的行(最多 1000 行),然后持续推送新日志行;每 20 秒发送一次「: ping」注释心跳。事件格式为「data: <LogLine JSON>\\n\\n」,LogLine 结构:{seq: int64, db_id?: int64, ts: RFC3339, level: info|warn|error, tag: string, text: string}。EventSource 无法设置请求头,可用 ?token= 查询参数携带 JWT。",
+        "operationId": "streamLogs",
+        "parameters": [
+          {
+            "name": "since",
+            "in": "query",
+            "required": false,
+            "description": "重放游标;仅重放 seq 大于该值的行,默认 0;重放后从最新 seq 续传",
+            "schema": {"type": "integer", "format": "int64", "default": 0}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "text/event-stream 事件流。每条事件的 data 为 LogLine JSON(见 /api/logs 的 items 元素结构);另有 20 秒一次的「: ping」注释行作为心跳",
+            "content": {
+              "text/event-stream": {
+                "schema": {"type": "string"}
+              }
+            }
+          },
+          "500": {
+            "description": "运行环境不支持流式响应(无 http.Flusher)",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      }
+    },
+    "/api/update/check": {
+      "get": {
+        "tags": ["update"],
+        "summary": "检查新版本",
+        "description": "查询 GitHub 最新 release 并与当前版本比较(以服务端视角为准,浏览器能访问 GitHub 不代表服务端能)。默认使用 30 分钟结果缓存(失败结果缓存 2 分钟)以规避 GitHub 匿名 API 每 IP 每小时 60 次的限流;force 参数非空时强制回源。查询失败也返回 200,通过 error 字段表达;开发构建(非正式版本号)时 comparable=false、has_update=false,并在 reason 中说明已禁用一键更新。",
+        "operationId": "checkUpdate",
+        "parameters": [
+          {
+            "name": "force",
+            "in": "query",
+            "required": false,
+            "description": "非空值(如 1)时绕过缓存强制回源查询;用户显式点击「检查更新」时使用",
+            "schema": {"type": "string"}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "版本检查结果;GitHub 查询失败时同样返回 200,error 字段携带原因,latest 等字段缺失",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/UpdateCheckResponse"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/update/apply": {
+      "post": {
+        "tags": ["update"],
+        "summary": "下载并暂存新版本",
+        "description": "一键更新。立即返回 202,实际下载/校验/暂存在后台 goroutine 进行(整包下载可能持续数分钟)。仅当 GitHub 最新版本大于当前正式版本号时才执行;升级期间再次调用返回 409。完成后进程会主动退出,由守护脚本(start.sh / start.bat / Docker ENTRYPOINT)重新拉起完成换装。进度通过 /api/update/stream 订阅。走的版本来自缓存,确保装上的就是界面上确认的版本。",
+        "operationId": "applyUpdate",
+        "responses": {
+          "202": {
+            "description": "已接受,更新在后台进行;完成后进程将自动重启换装",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/UpdateApplyResponse"}
+              }
+            }
+          },
+          "400": {
+            "description": "当前为开发构建不可比较,或当前已是最新版本",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "409": {
+            "description": "已有一个更新正在进行中",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "502": {
+            "description": "查询 GitHub 最新版本失败",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      }
+    },
+    "/api/update/rollback": {
+      "post": {
+        "tags": ["update"],
+        "summary": "回滚到上一版本",
+        "description": "把换装前备份的旧版本(artex.old)换回,成功后返回 202 并在约 500ms 后触发进程退出重启完成切换。需要存在备份(has_backup=true)。更新进行中时返回 409。",
+        "operationId": "rollbackUpdate",
+        "responses": {
+          "202": {
+            "description": "已接受,进程即将重启完成回滚切换",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/OkResponse"}
+              }
+            }
+          },
+          "400": {
+            "description": "回滚失败(如无备份或备份不可用)",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "409": {
+            "description": "更新正在进行中,无法回滚",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      }
+    },
+    "/api/update/stream": {
+      "get": {
+        "tags": ["update"],
+        "summary": "更新进度 SSE 流",
+        "description": "SSE 更新进度流。连接后先推一条当前进度快照(页面刷新后能立即看到进行中的升级),此后每次进度变化推送一条事件;每 20 秒发送一次「: ping」注释心跳。事件格式为「data: <UpdateProgress JSON>\\n\\n」,结构:{phase: idle|downloading|verifying|extracting|staged|failed, percent: int(仅下载阶段有意义,其余 -1), message: string, version?: string, error?: string}。EventSource 无法设置请求头,可用 ?token= 查询参数携带 JWT。",
+        "operationId": "streamUpdateProgress",
+        "responses": {
+          "200": {
+            "description": "text/event-stream 事件流。每条事件的 data 为 UpdateProgress JSON(见 components/schemas/UpdateProgress);另有 20 秒一次的「: ping」注释行作为心跳",
+            "content": {
+              "text/event-stream": {
+                "schema": {"type": "string"}
+              }
+            }
+          },
+          "500": {
+            "description": "运行环境不支持流式响应(无 http.Flusher)",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      }
+    },
+    "/api/audit": {
+      "get": {
+        "tags": ["system"],
+        "summary": "查询任务操作审计记录",
+        "description": "返回指定任务的工具调用审计记录(Guard 拦截日志)与失败归因计数。?task= 为空或「active」时跟随当前活跃任务;无任务时返回空 JSON 数组 []。attributions 为「归因名称 → 计数」映射(Observer / G5 等)。",
+        "operationId": "getAudit",
+        "parameters": [
+          {
+            "name": "task",
+            "in": "query",
+            "required": false,
+            "description": "任务 ID;空串或「active」表示当前活跃任务",
+            "schema": {"type": "string"}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "有任务时返回 {entries, attributions};无任务时返回空数组 []",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {"$ref": "#/components/schemas/AuditResponse"},
+                    {"type": "array", "items": {}, "description": "无活跃任务时的空数组"}
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/gc": {
+      "post": {
+        "tags": ["system"],
+        "summary": "触发资产垃圾回收",
+        "description": "触发资产库垃圾回收。当前为占位实现(no-op),固定返回 removed=0;新版资产存储的 GC 尚未实现。",
+        "operationId": "triggerGc",
+        "responses": {
+          "200": {
+            "description": "回收结果(当前恒为 0)",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/GcResponse"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/report": {
+      "get": {
+        "tags": ["system"],
+        "summary": "导出任务 Markdown 报告",
+        "description": "生成指定任务的 Markdown 格式漏洞报告(非 JSON 响应,Content-Type 为 text/markdown; charset=utf-8)。内容包含任务标题、目标、生成时间、资产分类统计(root_domain/ip/subdomain/app/service/endpoint)与确认漏洞列表(仅 KindFinding,事实不进报告)。?task= 为空或「active」时跟随当前活跃任务;无任务时 404。",
+        "operationId": "getTaskReport",
+        "parameters": [
+          {
+            "name": "task",
+            "in": "query",
+            "required": false,
+            "description": "任务 ID;空串或「active」表示当前活跃任务",
+            "schema": {"type": "string"}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Markdown 格式的任务报告正文",
+            "content": {
+              "text/markdown": {
+                "schema": {"type": "string"}
+              }
+            }
+          },
+          "404": {
+            "description": "无活跃任务(且未指定有效 task)",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      }
+    },
+    "/api/commands": {
+      "get": {
+        "tags": ["commands"],
+        "summary": "分页查询工具执行历史",
+        "description": "从 activity 表(kind=tool_use)分页返回任意工具的执行记录,可按任务(探索 ID)与关键词过滤。page 从 0 开始;size 默认 50。task 传无法解析的值时静默忽略(不按任务过滤)。total 为过滤后的总行数(不受分页影响)。output 字段可能很大。",
+        "operationId": "listCommands",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "description": "页码,从 0 开始,默认 0",
+            "schema": {"type": "integer", "default": 0}
+          },
+          {
+            "name": "size",
+            "in": "query",
+            "required": false,
+            "description": "每页条数,默认 50;≤0 时按 50 处理",
+            "schema": {"type": "integer", "default": 50}
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "description": "关键词,模糊匹配命令/输出等内容",
+            "schema": {"type": "string"}
+          },
+          {
+            "name": "task",
+            "in": "query",
+            "required": false,
+            "description": "探索(任务)ID,int64;缺省或无法解析时不按任务过滤",
+            "schema": {"type": "integer", "format": "int64"}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "工具执行记录列表与总数",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/CommandListResponse"}
+              }
+            }
+          },
+          "500": {
+            "description": "数据库查询失败",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      }
+    },
+    "/api/commands/stats": {
+      "get": {
+        "tags": ["commands"],
+        "summary": "按工具聚合调用统计",
+        "description": "在与列表接口相同的 task/q 过滤条件下,按工具名聚合执行次数与出错次数(关联 tool_result 的 is_error)。刻意不分页:统计描述的是整个过滤集,而非当前页。PostgreSQL 未连接时返回空 stats 数组。",
+        "operationId": "getCommandToolStats",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "description": "关键词,与 /api/commands 相同的模糊匹配",
+            "schema": {"type": "string"}
+          },
+          {
+            "name": "task",
+            "in": "query",
+            "required": false,
+            "description": "探索(任务)ID,int64;缺省或无法解析时不按任务过滤",
+            "schema": {"type": "integer", "format": "int64"}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "按工具聚合的调用统计",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/ToolStatsResponse"}
+              }
+            }
+          },
+          "500": {
+            "description": "数据库查询失败",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      }
+    },
+    "/api/settings": {
+      "get": {
+        "tags": ["settings"],
+        "summary": "读取运行时设置",
+        "description": "返回 UI 可切换的全部运行时设置。Brave / Tavily 的 API Key 出于安全考虑只回显是否已配置的布尔标志(brave_key_set / tavily_key_set),绝不回传明文。",
+        "operationId": "getSettings",
+        "responses": {
+          "200": {
+            "description": "当前生效的全部设置",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/SettingsResponse"}
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": ["settings"],
+        "summary": "部分更新运行时设置",
+        "description": "部分更新(PATCH 语义):所有字段均可省略,未提供(null 或缺省)的字段保持当前值不变。密钥/代理类字符串字段传 null 表示不改、传空串表示清除。修改 traffic_capture、global_proxy、web_search_*、llm_pool_* 等会影响 agent 构建的字段后,服务端会重建 agent 使配置生效(LLM 已配置时);llm_record、约束注入、noa_compaction、通知类设置即时生效无需重建。任务并发两项可只改其一(另一项自动用当前值兜底)。成功后回显完整的最新设置(同 GET)。",
+        "operationId": "updateSettings",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/SettingsUpdateRequest"}
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "更新成功,返回更新后的完整设置",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/SettingsResponse"}
+              }
+            }
+          },
+          "400": {
+            "description": "请求体 JSON 解析失败,或字段校验失败(workers 需为正数、代理地址格式非法、回链地址需以 http(s):// 开头、汇总周期需在 1-1440 分钟之间等)",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "500": {
+            "description": "设置持久化失败或 agent 重建失败",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      }
+    },
+    "/api/settings/web-search/test": {
+      "post": {
+        "tags": ["settings"],
+        "summary": "实测 Web 搜索配置连通性",
+        "description": "用给定(或当前已保存)的后端/代理/密钥真实执行一次「test」搜索,验证配置能否实际到达搜索后端(与 testLLM 对应)。请求体可为空,空字段回退到已保存配置:backend 为空用已保存后端;API Key 为空回退已存密钥(表单在已保存时不重填);代理取表单原值,空串=直连(便于先测直连再保存)。DeepSeek 后端的凭据来自当前激活 LLM 配置且超时放宽到 120 秒,其余后端 30 秒。无论连通与否都返回 200,用 ok 字段表达结果。",
+        "operationId": "testWebSearch",
+        "requestBody": {
+          "required": false,
+          "description": "请求体可为空;空字段回退到已保存配置",
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/WebSearchTestRequest"}
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "测试结果;ok=false 时携带 error 说明(网络不通、被限流、返回 0 条结果等)",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/WebSearchTestResponse"}
+              }
+            }
+          },
+          "400": {
+            "description": "请求体不是合法 JSON(空体除外)",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      }
+    },
+    "/api/settings/python/detect": {
+      "post": {
+        "tags": ["settings"],
+        "summary": "重新探测 Python 解释器",
+        "description": "在 PATH 中重新探测 Python 解释器(python3 / python),探测成功则写入设置并返回路径;两个名字都不在 PATH 时返回 404。探测结果会覆盖 python_interpreter 设置(供自定义脚本工具使用)。",
+        "operationId": "detectPython",
+        "responses": {
+          "200": {
+            "description": "探测成功,返回探测到的解释器路径(已保存)",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/PythonDetectResponse"}
+              }
+            }
+          },
+          "404": {
+            "description": "未检测到 python(python3/python 均不在 PATH)",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "500": {
+            "description": "探测结果保存失败",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      }
+    }
+  },
+  "schemas": {
+    "AuthInitRequest": {
+      "type": "object",
+      "required": ["password"],
+      "properties": {
+        "password": {
+          "type": "string",
+          "description": "管理员密码;至少 8 个字符(按 Unicode 字符数),不超过 72 字节"
+        }
+      }
+    },
+    "AuthLoginRequest": {
+      "type": "object",
+      "required": ["username", "password"],
+      "properties": {
+        "username": {
+          "type": "string",
+          "description": "用户名,固定为 ARTEX"
+        },
+        "password": {
+          "type": "string",
+          "description": "管理员密码"
+        }
+      }
+    },
+    "AuthChangePasswordRequest": {
+      "type": "object",
+      "required": ["old_password", "new_password"],
+      "properties": {
+        "old_password": {
+          "type": "string",
+          "description": "当前密码"
+        },
+        "new_password": {
+          "type": "string",
+          "description": "新密码;至少 8 个字符,不超过 72 字节"
+        }
+      }
+    },
+    "AuthStatusResponse": {
+      "type": "object",
+      "required": ["initialized"],
+      "properties": {
+        "initialized": {
+          "type": "boolean",
+          "description": "管理员密码是否已初始化;false 时前端引导进入 /setup"
+        }
+      }
+    },
+    "TokenResponse": {
+      "type": "object",
+      "required": ["token"],
+      "properties": {
+        "token": {
+          "type": "string",
+          "description": "JWT(HS256,7 天有效期,Subject 为 ARTEX)"
+        }
+      }
+    },
+    "OkResponse": {
+      "type": "object",
+      "required": ["ok"],
+      "properties": {
+        "ok": {
+          "type": "boolean",
+          "description": "操作是否成功,恒为 true"
+        }
+      }
+    },
+    "HealthResponse": {
+      "type": "object",
+      "required": ["ok", "service", "version"],
+      "properties": {
+        "ok": {"type": "boolean", "description": "恒为 true"},
+        "service": {"type": "string", "description": "服务名,恒为 artex"},
+        "version": {"type": "string", "description": "服务构建版本号"}
+      }
+    },
+    "StatsResponse": {
+      "type": "object",
+      "required": ["engine_mode", "llm_configured"],
+      "properties": {
+        "engine_mode": {
+          "type": "string",
+          "enum": ["idle", "exploring", "paused", "stalled"],
+          "description": "引擎运行模式;无任务时为 idle"
+        },
+        "llm_configured": {
+          "type": "boolean",
+          "description": "是否已配置 LLM 供应商(有任务时为该任务维度的就绪状态)"
+        },
+        "traffic": {
+          "type": "integer",
+          "description": "已抓取的流量交互条数;仅流量抓包开启时返回"
+        },
+        "traffic_enabled": {
+          "type": "boolean",
+          "description": "流量抓包是否开启;仅流量组件存在时返回"
+        },
+        "assets": {
+          "type": "integer",
+          "description": "资产总数;仅资产统计查询成功时返回"
+        },
+        "asset_counts": {
+          "type": "object",
+          "description": "各类型资产计数(键为类型名如 root_domain/ip/subdomain/app/service/endpoint);仅查询成功时返回",
+          "additionalProperties": {"type": "integer"}
+        },
+        "exploration": {
+          "type": "object",
+          "description": "探索图节点计数(键为 kind:goal/intent/fact/finding/hint 等);仅解析到任务时返回",
+          "additionalProperties": {"type": "integer"}
+        },
+        "active_task": {
+          "description": "任务级运行状态;仅解析到任务时返回",
+          "allOf": [{"$ref": "#/components/schemas/ActiveTaskStats"}]
+        }
+      }
+    },
+    "ActiveTaskStats": {
+      "type": "object",
+      "required": ["id", "description", "goal", "running", "paused", "engine_mode", "in_flight", "llm_in_flight", "last_activity", "stalled", "goals_total", "goals_met"],
+      "properties": {
+        "id": {"type": "string", "description": "任务 ID"},
+        "description": {"type": "string", "description": "任务描述(标题)"},
+        "goal": {"type": "string", "description": "任务目标"},
+        "running": {"type": "boolean", "description": "任务是否处于运行状态(LLM 就绪且已启动且未暂停)"},
+        "paused": {"type": "boolean", "description": "任务是否已暂停"},
+        "engine_mode": {
+          "type": "string",
+          "enum": ["idle", "exploring", "paused", "stalled"],
+          "description": "该任务的引擎运行模式"
+        },
+        "in_flight": {"type": "integer", "description": "running 状态的意图数"},
+        "llm_in_flight": {"type": "integer", "description": "进行中的 LLM 调用数"},
+        "last_activity": {"type": "integer", "format": "int64", "description": "最后活动时间(unix 秒,0=无记录)"},
+        "stalled": {"type": "boolean", "description": "是否判定为停滞(运行中且超 120 秒无 LLM 调用与心跳)"},
+        "goals_total": {"type": "integer", "description": "目标总数"},
+        "goals_met": {"type": "integer", "description": "已达成目标数"}
+      }
+    },
+    "LogLine": {
+      "type": "object",
+      "required": ["seq", "ts", "level", "tag", "text"],
+      "properties": {
+        "seq": {"type": "integer", "format": "int64", "description": "内存序号(进程内单调递增,断电重置)"},
+        "db_id": {"type": "integer", "format": "int64", "description": "server_logs 表主键;持久化之前的行(或 DB 未接入)为 0 或省略"},
+        "ts": {"type": "string", "format": "date-time", "description": "捕获时间(RFC3339)"},
+        "level": {
+          "type": "string",
+          "enum": ["info", "warn", "error"],
+          "description": "日志级别(按文本关键词推断)"
+        },
+        "tag": {"type": "string", "description": "行首 [tag] 标签(如 pg / planner / activity),无标签时为空串"},
+        "text": {"type": "string", "description": "日志正文"}
+      }
+    },
+    "LogsResponse": {
+      "type": "object",
+      "required": ["items", "cursor"],
+      "properties": {
+        "items": {
+          "type": "array",
+          "description": "日志行,时间升序(最新在最后)",
+          "items": {"$ref": "#/components/schemas/LogLine"}
+        },
+        "cursor": {
+          "type": "integer",
+          "format": "int64",
+          "description": "当前最新 seq,作为下次增量拉取或 SSE 重连的 since 游标"
+        }
+      }
+    },
+    "LogsHistoryResponse": {
+      "type": "object",
+      "required": ["items", "has_more"],
+      "properties": {
+        "items": {
+          "type": "array",
+          "description": "历史日志行(自 DB 读出并映射为 LogLine,db_id 恒有值)",
+          "items": {"$ref": "#/components/schemas/LogLine"}
+        },
+        "has_more": {
+          "type": "boolean",
+          "description": "是否可能还有更早日志(返回行数等于 limit 时为 true)"
+        }
+      }
+    },
+    "UpdateCheckResponse": {
+      "type": "object",
+      "required": ["current", "mode", "os", "arch", "has_backup", "repo", "boot_notice", "rolled_back"],
+      "properties": {
+        "current": {"type": "string", "description": "当前运行版本号"},
+        "mode": {
+          "type": "string",
+          "enum": ["binary", "docker"],
+          "description": "运行形态:二进制直跑或 Docker 容器"
+        },
+        "os": {"type": "string", "description": "操作系统(goos,如 linux/windows/darwin)"},
+        "arch": {"type": "string", "description": "CPU 架构(goarch,如 amd64/arm64)"},
+        "has_backup": {"type": "boolean", "description": "是否存在换装前的旧版本备份(artex.old),决定能否回滚"},
+        "repo": {"type": "string", "description": "发布仓库(owner/repo)"},
+        "boot_notice": {"type": "string", "description": "本次启动时对上一次升级的结论说明(成功 / 自动回滚 / 暂存件被丢弃),可能为空串"},
+        "rolled_back": {"type": "boolean", "description": "本次启动是否刚执行过自动回滚"},
+        "error": {"type": "string", "description": "查询 GitHub 最新版本失败的错误信息;存在时下面的 latest 等字段缺失"},
+        "latest": {"type": "string", "description": "GitHub 最新 release tag"},
+        "notes": {"type": "string", "description": "release 说明正文(Markdown)"},
+        "html_url": {"type": "string", "description": "release 页面地址"},
+        "published_at": {"type": "string", "format": "date-time", "description": "release 发布时间(RFC3339);零值时省略"},
+        "asset": {"type": "string", "description": "当前 os/arch 对应的资产文件名"},
+        "asset_available": {"type": "boolean", "description": "该资产是否存在于最新 release"},
+        "size": {"type": "integer", "format": "int64", "description": "资产字节数;仅资产存在时返回"},
+        "comparable": {"type": "boolean", "description": "当前版本号是否可与最新版本比较(开发构建为 false)"},
+        "has_update": {"type": "boolean", "description": "是否存在可更新版本(comparable 且 latest 大于 current)"},
+        "reason": {"type": "string", "description": "不可比较时的原因(开发版本已禁用一键更新)"}
+      }
+    },
+    "UpdateApplyResponse": {
+      "type": "object",
+      "required": ["ok", "target"],
+      "properties": {
+        "ok": {"type": "boolean", "description": "恒为 true"},
+        "target": {"type": "string", "description": "目标版本 tag(即将升级到的版本)"}
+      }
+    },
+    "UpdateProgress": {
+      "type": "object",
+      "required": ["phase", "percent", "message"],
+      "properties": {
+        "phase": {
+          "type": "string",
+          "enum": ["idle", "downloading", "verifying", "extracting", "staged", "failed"],
+          "description": "更新阶段;staged 表示新版本已就绪等待重启,failed 表示失败"
+        },
+        "percent": {
+          "type": "integer",
+          "description": "进度百分比(0-100);仅 downloading 阶段有意义,其余阶段为 -1"
+        },
+        "message": {"type": "string", "description": "人类可读的进度说明"},
+        "version": {"type": "string", "description": "目标版本 tag;升级开始后携带"},
+        "error": {"type": "string", "description": "失败原因;仅 failed 阶段携带"}
+      }
+    },
+    "AuditEntry": {
+      "type": "object",
+      "required": ["ts", "tool", "action"],
+      "properties": {
+        "ts": {"type": "integer", "format": "int64", "description": "事件时间(unix 秒)"},
+        "tool": {"type": "string", "description": "被拦截/放行的工具名"},
+        "action": {
+          "type": "string",
+          "enum": ["allow", "block"],
+          "description": "裁决结果"
+        },
+        "reason": {"type": "string", "description": "裁决原因;可能省略"},
+        "command": {"type": "string", "description": "触发的命令内容;可能省略"}
+      }
+    },
+    "AuditResponse": {
+      "type": "object",
+      "required": ["entries", "attributions"],
+      "properties": {
+        "entries": {
+          "type": "array",
+          "description": "操作审计记录(内存中累积,进程重启后清空)",
+          "items": {"$ref": "#/components/schemas/AuditEntry"}
+        },
+        "attributions": {
+          "type": "object",
+          "description": "失败归因计数,键为归因名称(如 Observer / G5),值为次数",
+          "additionalProperties": {"type": "integer"}
+        }
+      }
+    },
+    "GcResponse": {
+      "type": "object",
+      "required": ["removed"],
+      "properties": {
+        "removed": {"type": "integer", "description": "本次清理移除的对象数;当前为占位实现恒为 0"}
+      }
+    },
+    "CommandRecord": {
+      "type": "object",
+      "required": ["id", "exploration_id", "worker", "tool", "command", "output", "is_error", "created_at"],
+      "properties": {
+        "id": {"type": "integer", "format": "int64", "description": "activity 表主键"},
+        "exploration_id": {"type": "integer", "format": "int64", "description": "所属探索(任务)ID"},
+        "worker": {"type": "string", "description": "执行工具的 agent 名"},
+        "tool": {"type": "string", "description": "工具名"},
+        "command": {"type": "string", "description": "命令/调用内容"},
+        "output": {"type": "string", "description": "工具输出(可能很长)"},
+        "is_error": {"type": "boolean", "description": "对应 tool_result 是否出错"},
+        "created_at": {"type": "string", "format": "date-time", "description": "执行时间(RFC3339)"}
+      }
+    },
+    "CommandListResponse": {
+      "type": "object",
+      "required": ["commands", "total"],
+      "properties": {
+        "commands": {
+          "type": "array",
+          "description": "当前页的工具执行记录",
+          "items": {"$ref": "#/components/schemas/CommandRecord"}
+        },
+        "total": {"type": "integer", "description": "过滤后的总记录数(不受分页影响)"}
+      }
+    },
+    "ToolStat": {
+      "type": "object",
+      "required": ["tool", "total", "errors"],
+      "properties": {
+        "tool": {"type": "string", "description": "工具名(空名聚合为 -)"},
+        "total": {"type": "integer", "description": "调用次数"},
+        "errors": {"type": "integer", "description": "出错次数"}
+      }
+    },
+    "ToolStatsResponse": {
+      "type": "object",
+      "required": ["stats"],
+      "properties": {
+        "stats": {
+          "type": "array",
+          "description": "按工具聚合的调用统计",
+          "items": {"$ref": "#/components/schemas/ToolStat"}
+        }
+      }
+    },
+    "SettingsResponse": {
+      "type": "object",
+      "required": ["traffic_capture", "agent_traffic_binding", "llm_record", "web_search_enabled", "web_search_backend", "brave_key_set", "tavily_key_set", "web_search_proxy", "global_proxy", "python_interpreter", "workers", "task_concurrency_enabled", "task_concurrency_limit", "llm_pool_enabled", "llm_pool_bind_fallback", "constraints_inject_planner", "constraints_inject_worker", "noa_compaction", "notify_enabled", "notify_public_base_url", "notify_digest_interval_min"],
+      "properties": {
+        "traffic_capture": {"type": "boolean", "description": "流量抓包(MITM 记录)总开关"},
+        "agent_traffic_binding": {"type": "boolean", "description": "是否把任务流量归属到任务(资产-流量绑定)"},
+        "llm_record": {"type": "boolean", "description": "LLM 调用录制开关(默认关),即时生效"},
+        "web_search_enabled": {"type": "boolean", "description": "Web 搜索工具开关"},
+        "web_search_backend": {"type": "string", "description": "Web 搜索后端(如 brave / tavily / deepseek)"},
+        "brave_key_set": {"type": "boolean", "description": "Brave API Key 是否已配置(不回显明文)"},
+        "tavily_key_set": {"type": "boolean", "description": "Tavily API Key 是否已配置(不回显明文)"},
+        "web_search_proxy": {"type": "string", "description": "Web 搜索独立出口代理(http/https/socks5),空串=直连"},
+        "global_proxy": {"type": "string", "description": "全局出口代理(http/https/socks5),所有目标流量走它,空串=直连"},
+        "python_interpreter": {"type": "string", "description": "自定义脚本工具的 Python 解释器路径,空串=按运行时探测"},
+        "workers": {"type": "integer", "description": "并发工作 agent 数(默认 3);对之后启动的任务生效"},
+        "task_concurrency_enabled": {"type": "boolean", "description": "同时运行任务数上限开关(默认关)"},
+        "task_concurrency_limit": {"type": "integer", "description": "同时运行任务上限(开关关闭时也回显合理默认值,开启后默认 5)"},
+        "llm_pool_enabled": {"type": "boolean", "description": "LLM 轮询(故障转移)开关(默认关)"},
+        "llm_pool_bind_fallback": {"type": "boolean", "description": "绑定配置失败时兜底回轮询链的开关(仅轮询开启时有意义)"},
+        "constraints_inject_planner": {"type": "boolean", "description": "把任务 allow/deny 约束注入 planner 系统提示(默认开)"},
+        "constraints_inject_worker": {"type": "boolean", "description": "把任务 allow/deny 约束注入 worker 系统提示(默认开)"},
+        "noa_compaction": {"type": "boolean", "description": "实验功能:noa 模型驱动上下文压缩(默认关)"},
+        "notify_enabled": {"type": "boolean", "description": "漏洞 IM 推送全局开关(默认开)"},
+        "notify_public_base_url": {"type": "string", "description": "推送回链用的外部地址,空串=未配置"},
+        "notify_digest_interval_min": {"type": "integer", "description": "汇总推送周期(分钟,1-1440,默认值见服务端)"}
+      }
+    },
+    "SettingsUpdateRequest": {
+      "type": "object",
+      "description": "部分更新:所有字段均可省略,省略/null 表示保持当前值不变;密钥与代理类字符串传空串表示清除",
+      "properties": {
+        "traffic_capture": {"type": "boolean", "nullable": true, "description": "流量抓包开关;修改会重建 agent"},
+        "agent_traffic_binding": {"type": "boolean", "nullable": true, "description": "任务流量归属绑定开关"},
+        "llm_record": {"type": "boolean", "nullable": true, "description": "LLM 录制开关,即时生效"},
+        "web_search_enabled": {"type": "boolean", "nullable": true, "description": "Web 搜索开关;任一 web_search 相关字段出现都会触发保存"},
+        "web_search_backend": {"type": "string", "nullable": true, "description": "Web 搜索后端"},
+        "brave_search_api_key": {"type": "string", "nullable": true, "description": "Brave API Key;null=不改,空串=清除,非空=覆盖"},
+        "tavily_search_api_key": {"type": "string", "nullable": true, "description": "Tavily API Key;null=不改,空串=清除,非空=覆盖"},
+        "web_search_proxy": {"type": "string", "nullable": true, "description": "Web 搜索独立出口代理;null=不改,空串=清除(直连)"},
+        "global_proxy": {"type": "string", "nullable": true, "description": "全局出口代理;null=不改,空串=清除(直连);格式非法返回 400;修改会重建 agent"},
+        "python_interpreter": {"type": "string", "nullable": true, "description": "Python 解释器路径,写入前去除首尾空白"},
+        "workers": {"type": "integer", "nullable": true, "description": "并发工作 agent 数,需为正数;对之后启动的任务生效"},
+        "task_concurrency_enabled": {"type": "boolean", "nullable": true, "description": "任务并发上限开关;与 limit 可只改其一,另一项用当前值兜底"},
+        "task_concurrency_limit": {"type": "integer", "nullable": true, "description": "同时运行任务上限;修改后立即协调一次(放行排队或补位启动)"},
+        "llm_pool_enabled": {"type": "boolean", "nullable": true, "description": "LLM 轮询(故障转移)开关;修改会重建 provider 链与相关 agent"},
+        "llm_pool_bind_fallback": {"type": "boolean", "nullable": true, "description": "绑定配置失败兜底回轮询链开关"},
+        "constraints_inject_planner": {"type": "boolean", "nullable": true, "description": "约束注入 planner 开关,即时生效"},
+        "constraints_inject_worker": {"type": "boolean", "nullable": true, "description": "约束注入 worker 开关,即时生效"},
+        "noa_compaction": {"type": "boolean", "nullable": true, "description": "noa 上下文压缩实验开关;对之后启动的 run 生效"},
+        "notify_enabled": {"type": "boolean", "nullable": true, "description": "漏洞 IM 推送全局开关,即时生效"},
+        "notify_public_base_url": {"type": "string", "nullable": true, "description": "推送回链外部地址;非空时必须以 http:// 或 https:// 开头,尾部斜杠会被裁掉"},
+        "notify_digest_interval_min": {"type": "integer", "nullable": true, "description": "汇总推送周期(分钟),需在 1-1440 之间"}
+      }
+    },
+    "WebSearchTestRequest": {
+      "type": "object",
+      "description": "请求体可为空;空字段回退到已保存配置",
+      "properties": {
+        "web_search_backend": {"type": "string", "description": "待测后端;空串=用已保存后端"},
+        "web_search_proxy": {"type": "string", "description": "待测代理(按表单原值,空串=直连;便于保存前先测直连)"},
+        "brave_search_api_key": {"type": "string", "description": "Brave API Key;空串=回退已存密钥(已保存时表单不回填)"},
+        "tavily_search_api_key": {"type": "string", "description": "Tavily API Key;空串=回退已存密钥"}
+      }
+    },
+    "WebSearchTestResponse": {
+      "type": "object",
+      "required": ["ok", "backend"],
+      "properties": {
+        "ok": {"type": "boolean", "description": "搜索是否成功返回结果"},
+        "error": {"type": "string", "description": "失败原因(网络错误、被限流、返回 0 条结果等);ok=false 时存在"},
+        "count": {"type": "integer", "description": "测试搜索返回的结果条数;ok=true 时存在"},
+        "backend": {"type": "string", "description": "实际测试使用的后端"}
+      }
+    },
+    "PythonDetectResponse": {
+      "type": "object",
+      "required": ["python_interpreter"],
+      "properties": {
+        "python_interpreter": {
+          "type": "string",
+          "description": "探测到的解释器路径(python3 或 python),已写入设置"
+        }
+      }
+    }
+  }
+}

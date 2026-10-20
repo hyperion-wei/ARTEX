@@ -1,0 +1,1634 @@
+{
+  "paths": {
+    "/api/llm": {
+      "get": {
+        "tags": ["llm"],
+        "summary": "获取全局 LLM 配置",
+        "description": "返回当前全局生效的 LLM 配置:provider、模型、base_url、出站代理、限速、上下文窗口与思考参数。API Key 不回传明文,仅以 key_set 布尔表示是否已设置。",
+        "operationId": "getLLMConfig",
+        "responses": {
+          "200": {
+            "description": "当前全局 LLM 配置",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LLMConfig"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": ["llm"],
+        "summary": "保存全局 LLM 配置",
+        "description": "运行时更新全局 LLM 配置并立即生效:保存前会用该配置实际构建 provider 校验(失败 400),持久化为激活 profile 后失效 agent 缓存、重建引擎 provider。api_key 留空表示沿用已保存的 key;若最终仍无任何 key 则返回 400。context_window_k 为 0 时保持默认 200K,大于 1000 会被截到 1000。成功后返回与 GET /api/llm 相同的配置视图。",
+        "operationId": "saveLLMConfig",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LLMConfigInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "保存成功,返回保存后的全局配置(同 GET /api/llm)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LLMConfig"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求体非法 / 缺少 api_key(且无已存 key 可沿用)/ provider 构建失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "配置持久化失败或保存后的 provider 不可用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/llm/test": {
+      "post": {
+        "tags": ["llm"],
+        "summary": "LLM 连通性测试",
+        "description": "用提交的配置真实发起一次最小补全请求,验证端点连通性。注意:这是耗时调用,受 30 秒硬超时约束,客户端需设置足够超时。API Key 解析优先级:表单 api_key > profile_id 指定档案存储的 key > 全局配置的 key。测试请求会原样携带 thinking_type / reasoning_effort、流式开关(streaming 省略=流式)与自定义会话头 session_header_key(值为一次性随机 session id),与生产路径一致,避免「测试通过、运行 400」。已配置的重试策略不参与测试。测试失败同样返回 200,以 ok=false + error 表达。",
+        "operationId": "testLLMConnection",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LLMTestRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "测试结果(ok=false 时带 error;ok=true 时带延迟、模型与截断后的实际回复)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LLMTestResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求体不是合法 JSON",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/llm/records": {
+      "get": {
+        "tags": ["llm-records"],
+        "summary": "LLM 调用记录列表",
+        "description": "分页返回历史 LLM 调用记录(llm_records 表),按 id 倒序。model 与 task 为精确匹配,session 为 session_id 模糊包含(ILIKE)。列表项不含请求/响应正文,完整正文请查 /api/llm/records/{id}。",
+        "operationId": "listLLMRecords",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "description": "页码,从 0 开始(负数按 0 处理)",
+            "schema": {
+              "type": "integer",
+              "default": 0
+            }
+          },
+          {
+            "name": "size",
+            "in": "query",
+            "description": "每页条数(小于等于 0 时按 50 处理)",
+            "schema": {
+              "type": "integer",
+              "default": 50
+            }
+          },
+          {
+            "name": "model",
+            "in": "query",
+            "description": "按模型名精确过滤,空=不过滤",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "按会话 ID 模糊包含过滤,空=不过滤",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "task",
+            "in": "query",
+            "description": "按任务 ID 精确过滤,空=不过滤",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "记录列表与总数",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LLMRecordList"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "数据库查询失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": ["llm-records"],
+        "summary": "删除任务的 LLM 调用记录",
+        "description": "删除指定 task_id 的全部 LLM 调用记录(与记录页任务选择器同一精确匹配口径),返回实际删除行数。task 为必填,空则 400。",
+        "operationId": "deleteLLMRecords",
+        "parameters": [
+          {
+            "name": "task",
+            "in": "query",
+            "required": true,
+            "description": "任务 ID(精确匹配 task_id)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "删除成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["deleted"],
+                  "properties": {
+                    "deleted": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "删除的记录行数"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "缺少 task 参数",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "数据库删除失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/llm/records/tasks": {
+      "get": {
+        "tags": ["llm-records"],
+        "summary": "有调用记录的任务列表",
+        "description": "返回 llm_records 中去重后的非空 task_id 及各自记录数,按最近一条记录倒序,供记录页任务筛选器与批量删除使用。",
+        "operationId": "listLLMRecordTasks",
+        "responses": {
+          "200": {
+            "description": "任务列表",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LLMTaskList"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "数据库查询失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/llm/records/by-model": {
+      "get": {
+        "tags": ["llm-records"],
+        "summary": "任务按模型聚合 token 用量",
+        "description": "从常开的 llm_usage 计量台账按模型聚合指定任务的 token 用量与调用次数。对 agent 级模型绑定、轮询/故障转移与中断运行均准确(每次调用无论成败都计量),无需开启记录开关。task 为必填。",
+        "operationId": "getLLMTokenByModel",
+        "parameters": [
+          {
+            "name": "task",
+            "in": "query",
+            "required": true,
+            "description": "任务 ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "按模型聚合的 token 用量(数据源不可用时返回空列表)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LLMTokenByModelList"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "缺少 task 参数",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "数据库查询失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/llm/records/{id}": {
+      "get": {
+        "tags": ["llm-records"],
+        "summary": "LLM 调用记录详情",
+        "description": "返回单条 LLM 调用记录,含归一化的请求/响应正文(request_body / response_body,不含工具 schema 与 tool_use 块)与未加工的原始 HTTP 报文(raw_request / raw_response,旧记录或未到达 HTTP 层的调用为空)。",
+        "operationId": "getLLMRecordDetail",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "记录 ID",
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "记录详情",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LLMRecord"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "id 不是合法整数",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "记录不存在",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/llm/profiles": {
+      "get": {
+        "tags": ["llm-profiles"],
+        "summary": "LLM 配置档案列表",
+        "description": "返回全部 LLM profile(含轮询/重试覆盖、流式模式、输出上限、会话头等参数),按 id 升序。API Key 不回传,仅 api_key_hint 给出尾 4 位提示;id 为数字字符串。",
+        "operationId": "listLLMProfiles",
+        "responses": {
+          "200": {
+            "description": "档案列表",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LLMProfileList"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "数据库查询失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": ["llm-profiles"],
+        "summary": "新建/更新 LLM 配置档案",
+        "description": "id 为 0 或省略=新建(返回新 id);id 大于 0=更新(返回同一 id),更新时 api_key 留空表示沿用已存 key(api_key_hint 会按新 key 重算)。streaming 省略=默认流式 true。max_tokens 负数归零(0=不发送上限);max_tokens_field 仅 openai 格式有效(取值 max_completion_tokens),其他格式或未知取值会被清空。retry 覆盖值会被夹取到 attempts [-1,20]、interval_ms [0,3600000]。保存后失效 agent 缓存并热重建引擎 provider 链(无论是否激活配置,故障转移开启时任何档案的关键字段变更都会重塑链路),绑定该档案的任务下一轮重建。",
+        "operationId": "saveLLMProfile",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LLMProfileInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "保存成功,返回档案 ID",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["id"],
+                  "properties": {
+                    "id": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "档案 ID(新建返回新 id,更新返回原 id)"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求体不是合法 JSON 或违反数据库约束(如 name 重复、format 非法)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "数据库写入失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/llm/profiles/{id}": {
+      "delete": {
+        "tags": ["llm-profiles"],
+        "summary": "删除 LLM 配置档案",
+        "description": "删除非激活状态的 LLM profile;激活中的档案不能删(409,需先切换激活)。删除在事务内锁定并迁移任务/agent/会话引用、保留任务轮询游标;期间引用被并发修改会在有限次重试后返回 409,等待释放超时(上限 15 秒)同样 409。删除成功后失效对应 agent 缓存与熔断状态、同步任务 LLM 状态并重放激活配置,受影响任务中因配额阻塞的意图会被重开。",
+        "operationId": "deleteLLMProfile",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "档案 ID",
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "删除成功,返回被删除的档案 ID",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["deleted"],
+                  "properties": {
+                    "deleted": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "被删除的档案 ID"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "档案不存在",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "激活中的档案不能删除 / 档案引用正被任务或会话修改 / 等待引用释放超时",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "数据库删除失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/llm/profiles/active": {
+      "post": {
+        "tags": ["llm-profiles"],
+        "summary": "切换激活的 LLM 配置",
+        "description": "把指定 profile 设为全局激活(恒为故障转移链链首),并立即热切换运行中引擎的 provider;失效 agent 缓存后重放激活配置,使全局兜底与任务显式链共享同一限流器。显式绑定其他档案的任务不受影响,但其兜底链随之变化。",
+        "operationId": "activateLLMProfile",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["id"],
+                "properties": {
+                  "id": {
+                    "type": "integer",
+                    "format": "int64",
+                    "description": "要激活的档案 ID"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "激活成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["ok"],
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求体不是合法 JSON",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "数据库写入失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/llm/retry-policy": {
+      "get": {
+        "tags": ["llm"],
+        "summary": "获取全局 LLM 重试策略",
+        "description": "返回五层重试(建连 / 空响应 / 断流 / 熔断 / 意图重跑)的全局次数与间隔配置。从未配置过时各字段为 0,即全部走内置默认(前端把 0 显示为「默认」)。",
+        "operationId": "getLLMRetryPolicy",
+        "responses": {
+          "200": {
+            "description": "全局重试策略",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LLMRetryPolicy"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": ["llm"],
+        "summary": "保存全局 LLM 重试策略",
+        "description": "保存全局重试策略(存 settings 表单个 JSON 键),越界值自动夹取:attempts 限 [-1,20],interval_ms 限 [0,3600000]。保存后立即热应用——建连/空响应/断流参数是 provider 的构建参数,会失效并重建缓存中的 provider、重放激活档案;熔断参数直接推给进程级 Registry。返回夹取后的最终策略。",
+        "operationId": "saveLLMRetryPolicy",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LLMRetryPolicy"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "保存成功,返回夹取后的最终策略",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LLMRetryPolicy"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求体不是合法 JSON",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "数据库写入失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/llm/pool": {
+      "get": {
+        "tags": ["llm"],
+        "summary": "LLM 轮询池状态",
+        "description": "返回故障转移(轮询)总开关与绑定兜底开关、解析后的链路顺序(激活档案恒为链首,其余按 priority 降序、id 升序)以及每个 profile 的熔断健康状态(state 为 ok / degraded(有失败未熔断)/ tripped(已熔断)、连续失败数、熔断次数、剩余冷却秒数)。被 pool_exclude 排除的档案同样列出并标记,便于理解其为何不在链上。",
+        "operationId": "getLLMPoolStatus",
+        "responses": {
+          "200": {
+            "description": "轮询池状态",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LLMPoolStatus"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/llm/pool/reset": {
+      "post": {
+        "tags": ["llm"],
+        "summary": "重置 LLM 熔断状态",
+        "description": "清除已触发熔断的 profile 断路器,使下一次调用立即重试(「立即恢复」)。id 为 0 或省略=重置全部 profile。返回重置后的完整池状态(同 GET /api/llm/pool)。",
+        "operationId": "resetLLMPoolBreaker",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "integer",
+                    "format": "int64",
+                    "description": "要重置的档案 ID;0 或省略=重置全部"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "重置完成,返回当前池状态",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LLMPoolStatus"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求体不是合法 JSON",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/llm/models": {
+      "post": {
+        "tags": ["llm"],
+        "summary": "拉取可用模型列表",
+        "description": "由服务端转发调用 provider 的模型列表端点,注意这是同步外呼且可能耗时(客户端超时 30 秒,响应体最大读取 4MB)。openai / openai-responses 走 {base_url}/models(Bearer 鉴权,兼容完整 endpoint URL,默认 https://api.openai.com/v1);anthropic 走 {base_url}/v1/models(x-api-key + anthropic-version 头,默认 https://api.anthropic.com),若 base_url 以 /anthropic 结尾还会按顺序回退尝试其根路径的 OpenAI 端点(DeepSeek 等 Anthropic 兼容第三方把模型列表只放在 OpenAI 路径)。API Key 解析:表单 api_key > profile_id 指定档案存储的 key。无 key 或所有候选端点均失败时仍返回 200,以 ok=false + error 表达;某端点 200 但列表为空会继续尝试其余候选。",
+        "operationId": "listLLMModels",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LLMModelsRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "模型列表或失败原因(ok=false 时带 error)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LLMModelsResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求体不是合法 JSON",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "schemas": {
+    "LLMConfig": {
+      "type": "object",
+      "required": [
+        "configured",
+        "provider",
+        "model",
+        "base_url",
+        "proxy",
+        "key_set",
+        "rate_per_second",
+        "rate_per_minute",
+        "context_window_k",
+        "thinking_type",
+        "reasoning_effort"
+      ],
+      "properties": {
+        "configured": {
+          "type": "boolean",
+          "description": "是否已配置生效的 LLM"
+        },
+        "provider": {
+          "type": "string",
+          "description": "provider 格式(openai / anthropic / openai-responses;其他值按 anthropic 处理)"
+        },
+        "model": {
+          "type": "string",
+          "description": "模型名(留空时按 provider 取内置默认)"
+        },
+        "base_url": {
+          "type": "string",
+          "description": "API 根地址(末尾 / 与已知 endpoint 后缀会被剥掉)"
+        },
+        "proxy": {
+          "type": "string",
+          "description": "出站代理(http/https/socks5),空=直连或用环境变量"
+        },
+        "key_set": {
+          "type": "boolean",
+          "description": "API Key 是否已设置(永不回传明文)"
+        },
+        "rate_per_second": {
+          "type": "number",
+          "format": "double",
+          "description": "每秒请求上限,0=不限"
+        },
+        "rate_per_minute": {
+          "type": "number",
+          "format": "double",
+          "description": "每分钟请求上限,0=不限"
+        },
+        "context_window_k": {
+          "type": "integer",
+          "description": "上下文窗口(K tokens),用于压缩阈值;0=默认 200K,上限 1000"
+        },
+        "thinking_type": {
+          "type": "string",
+          "description": "思考开关(thinking.type):空=不发送,disabled=显式关闭,enabled=开启"
+        },
+        "reasoning_effort": {
+          "type": "string",
+          "description": "思考强度:空=不发送,low/medium/high/xhigh/max"
+        }
+      }
+    },
+    "LLMConfigInput": {
+      "type": "object",
+      "description": "全局 LLM 配置保存请求。api_key 留空=沿用已存 key;若最终无任何可用 key 则 400。provider/model/base_url 留空时按 provider 内置默认兜底。",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "description": "provider 格式:openai / anthropic / openai-responses(其他值按 anthropic 处理)"
+        },
+        "model": {
+          "type": "string",
+          "description": "模型名(空=按 provider 内置默认)"
+        },
+        "base_url": {
+          "type": "string",
+          "description": "API 根地址"
+        },
+        "proxy": {
+          "type": "string",
+          "description": "出站代理(http/https/socks5)"
+        },
+        "api_key": {
+          "type": "string",
+          "format": "password",
+          "description": "API Key;留空表示沿用已保存的 key"
+        },
+        "rate_per_second": {
+          "type": "number",
+          "format": "double",
+          "description": "每秒请求上限,0=不限"
+        },
+        "rate_per_minute": {
+          "type": "number",
+          "format": "double",
+          "description": "每分钟请求上限,0=不限"
+        },
+        "context_window_k": {
+          "type": "integer",
+          "description": "上下文窗口(K tokens);0=保持默认 200K,大于 1000 截到 1000"
+        },
+        "thinking_type": {
+          "type": "string",
+          "description": "思考开关(thinking.type):空=不发送,disabled,enabled"
+        },
+        "reasoning_effort": {
+          "type": "string",
+          "description": "思考强度:空=不发送,low/medium/high/xhigh/max"
+        }
+      }
+    },
+    "LLMTestRequest": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "description": "provider 格式:openai / anthropic / openai-responses(其他值按 anthropic 处理)"
+        },
+        "model": {
+          "type": "string",
+          "description": "模型名"
+        },
+        "base_url": {
+          "type": "string",
+          "description": "API 根地址"
+        },
+        "proxy": {
+          "type": "string",
+          "description": "出站代理(http/https/socks5)"
+        },
+        "api_key": {
+          "type": "string",
+          "format": "password",
+          "description": "API Key;留空时依次回退:profile_id 指定档案存储的 key > 全局配置的 key"
+        },
+        "thinking_type": {
+          "type": "string",
+          "description": "思考开关(thinking.type),测试请求会原样携带以复现生产行为"
+        },
+        "reasoning_effort": {
+          "type": "string",
+          "description": "思考强度,测试请求会原样携带以复现生产行为"
+        },
+        "profile_id": {
+          "type": "integer",
+          "format": "int64",
+          "nullable": true,
+          "description": "测试已存档案时传入:api_key / session_header_key 留空则用该档案存储值兜底"
+        },
+        "streaming": {
+          "type": "boolean",
+          "nullable": true,
+          "description": "收发模式:true=流式(SSE),false=非流式;省略=流式(与保存档案时的默认一致)"
+        },
+        "session_header_key": {
+          "type": "string",
+          "description": "自定义会话头名;非空时测试请求带该头(值为一次性随机 session id),用于 opencode zen 等强制会话头的端点"
+        }
+      }
+    },
+    "LLMTestResult": {
+      "type": "object",
+      "required": ["ok"],
+      "properties": {
+        "ok": {
+          "type": "boolean",
+          "description": "测试是否通过(失败也返回 HTTP 200,以本字段区分)"
+        },
+        "latency_ms": {
+          "type": "integer",
+          "description": "往返延迟(毫秒),仅 ok=true 时返回"
+        },
+        "model": {
+          "type": "string",
+          "description": "实际测试的模型名,仅 ok=true 时返回"
+        },
+        "reply": {
+          "type": "string",
+          "description": "模型实际回复(按字符截断到 200 字),仅 ok=true 时返回"
+        },
+        "error": {
+          "type": "string",
+          "description": "失败原因,仅 ok=false 时返回"
+        }
+      }
+    },
+    "LLMRecord": {
+      "type": "object",
+      "description": "一条 LLM 调用记录。request_body / response_body(归一化视图,不含工具 schema 与 tool_use 块)与 raw_request / raw_response(原始 HTTP 报文,含完整 SSE 帧)仅在详情接口 /api/llm/records/{id} 返回;旧记录或未到达 HTTP 层的调用这些字段为空。",
+      "required": [
+        "id",
+        "ts",
+        "model",
+        "profile_name",
+        "session_id",
+        "task_id",
+        "worker",
+        "latency_ms",
+        "input_tokens",
+        "output_tokens",
+        "cache_read",
+        "cache_write",
+        "status"
+      ],
+      "properties": {
+        "id": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "ts": {
+          "type": "string",
+          "format": "date-time",
+          "description": "调用时间"
+        },
+        "model": {
+          "type": "string",
+          "description": "模型名"
+        },
+        "profile_name": {
+          "type": "string",
+          "description": "使用的 LLM 档案名"
+        },
+        "session_id": {
+          "type": "string",
+          "description": "会话 ID"
+        },
+        "task_id": {
+          "type": "string",
+          "description": "任务 ID,可为空串"
+        },
+        "worker": {
+          "type": "string",
+          "description": "发起调用的 worker 角色"
+        },
+        "latency_ms": {
+          "type": "integer",
+          "description": "延迟(毫秒)"
+        },
+        "input_tokens": {
+          "type": "integer"
+        },
+        "output_tokens": {
+          "type": "integer"
+        },
+        "cache_read": {
+          "type": "integer",
+          "description": "缓存命中的输入 token 数"
+        },
+        "cache_write": {
+          "type": "integer",
+          "description": "写入缓存的 token 数"
+        },
+        "status": {
+          "type": "string",
+          "description": "调用结果状态(如 ok / error)"
+        },
+        "error": {
+          "type": "string",
+          "description": "失败原因,成功时省略"
+        },
+        "request_body": {
+          "type": "string",
+          "description": "归一化请求正文(JSON),仅详情接口返回"
+        },
+        "response_body": {
+          "type": "string",
+          "description": "归一化响应正文,仅详情接口返回"
+        },
+        "raw_request": {
+          "type": "string",
+          "description": "发往 provider 的原始 HTTP 请求体(含完整工具 schema),仅详情接口返回"
+        },
+        "raw_response": {
+          "type": "string",
+          "description": "provider 返回的原始报文(含原始 SSE 帧),仅详情接口返回"
+        }
+      }
+    },
+    "LLMRecordList": {
+      "type": "object",
+      "required": ["records", "total"],
+      "properties": {
+        "records": {
+          "type": "array",
+          "items": {
+            "$ref": "#/components/schemas/LLMRecord"
+          },
+          "description": "当前页记录(不含请求/响应正文)"
+        },
+        "total": {
+          "type": "integer",
+          "description": "过滤条件命中的总条数"
+        }
+      }
+    },
+    "LLMTaskList": {
+      "type": "object",
+      "required": ["tasks"],
+      "properties": {
+        "tasks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["task_id", "count"],
+            "properties": {
+              "task_id": {
+                "type": "string",
+                "description": "任务 ID"
+              },
+              "count": {
+                "type": "integer",
+                "description": "该任务的记录条数"
+              }
+            }
+          },
+          "description": "有调用记录的任务,按最近记录倒序"
+        }
+      }
+    },
+    "LLMTokenByModelList": {
+      "type": "object",
+      "required": ["models"],
+      "properties": {
+        "models": {
+          "type": "array",
+          "items": {
+            "$ref": "#/components/schemas/LLMModelTokenStat"
+          },
+          "description": "按模型聚合的用量,数据源不可用时为空数组"
+        }
+      }
+    },
+    "LLMModelTokenStat": {
+      "type": "object",
+      "required": [
+        "model",
+        "calls",
+        "input_tokens",
+        "output_tokens",
+        "cache_read_tokens",
+        "cache_write_tokens"
+      ],
+      "properties": {
+        "model": {
+          "type": "string",
+          "description": "模型名"
+        },
+        "calls": {
+          "type": "integer",
+          "description": "命中该模型的调用次数"
+        },
+        "input_tokens": {
+          "type": "integer"
+        },
+        "output_tokens": {
+          "type": "integer"
+        },
+        "cache_read_tokens": {
+          "type": "integer",
+          "description": "缓存命中的输入 token 数"
+        },
+        "cache_write_tokens": {
+          "type": "integer",
+          "description": "写入缓存的 token 数"
+        }
+      }
+    },
+    "LLMProfileList": {
+      "type": "object",
+      "required": ["profiles"],
+      "properties": {
+        "profiles": {
+          "type": "array",
+          "items": {
+            "$ref": "#/components/schemas/LLMProfile"
+          },
+          "description": "全部档案,按 id 升序"
+        }
+      }
+    },
+    "LLMProfile": {
+      "type": "object",
+      "description": "LLM 配置档案(响应视图)。id 为数字字符串;API Key 永不回传,仅 api_key_hint 尾 4 位提示。",
+      "required": [
+        "id",
+        "name",
+        "format",
+        "model",
+        "rate_per_second",
+        "rate_per_minute",
+        "context_window_k",
+        "thinking_type",
+        "reasoning_effort",
+        "is_default",
+        "priority",
+        "pool_exclude",
+        "streaming",
+        "max_tokens",
+        "max_tokens_field",
+        "session_header_key",
+        "retry"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "档案 ID(数字字符串)"
+        },
+        "name": {
+          "type": "string",
+          "description": "档案名(唯一)"
+        },
+        "format": {
+          "type": "string",
+          "enum": ["openai", "anthropic", "openai-responses"],
+          "description": "协议格式"
+        },
+        "base_url": {
+          "type": "string",
+          "description": "API 根地址,可省略"
+        },
+        "proxy": {
+          "type": "string",
+          "description": "出站代理(http/https/socks5),可省略;空=用环境变量"
+        },
+        "model": {
+          "type": "string",
+          "description": "模型名"
+        },
+        "api_key_hint": {
+          "type": "string",
+          "description": "API Key 尾 4 位提示(…xxxx),可省略"
+        },
+        "rate_per_second": {
+          "type": "number",
+          "format": "double",
+          "description": "每秒请求上限,0=不限"
+        },
+        "rate_per_minute": {
+          "type": "number",
+          "format": "double",
+          "description": "每分钟请求上限,0=不限"
+        },
+        "context_window_k": {
+          "type": "integer",
+          "description": "上下文窗口(K tokens);0=默认 200K,上限 1000"
+        },
+        "thinking_type": {
+          "type": "string",
+          "description": "思考开关(thinking.type):空=不发送,disabled,enabled"
+        },
+        "reasoning_effort": {
+          "type": "string",
+          "description": "思考强度:空=不发送,low/medium/high/xhigh/max"
+        },
+        "is_default": {
+          "type": "boolean",
+          "description": "是否为当前激活档案(激活档案恒为故障转移链链首)"
+        },
+        "priority": {
+          "type": "integer",
+          "description": "故障转移链排序权重,越大越靠前"
+        },
+        "pool_exclude": {
+          "type": "boolean",
+          "description": "true=不作为故障转移目标,但仍可被 agent/任务显式绑定"
+        },
+        "streaming": {
+          "type": "boolean",
+          "description": "收发模式:true=流式(SSE),false=非流式"
+        },
+        "max_tokens": {
+          "type": "integer",
+          "description": "单次回复输出上限(token);0=不发送该字段,由端点默认值决定"
+        },
+        "max_tokens_field": {
+          "type": "string",
+          "description": "输出上限所用请求字段名:空=max_tokens(默认),max_completion_tokens(仅 openai 格式有效)"
+        },
+        "session_header_key": {
+          "type": "string",
+          "description": "自定义会话头名;非空时每个请求带该头,值为当前会话/意图的 session id;空=不发送"
+        },
+        "retry": {
+          "$ref": "#/components/schemas/LLMRetryOverride"
+        }
+      }
+    },
+    "LLMProfileInput": {
+      "type": "object",
+      "description": "新建/更新 LLM 档案请求。id 为 0 或省略=新建(必填 name / format / model,否则违反数据库约束);id>0=更新,api_key 留空沿用已存 key。streaming 省略=默认流式 true。",
+      "required": ["name", "format", "model"],
+      "properties": {
+        "id": {
+          "type": "integer",
+          "format": "int64",
+          "description": "档案 ID;0 或省略=新建,大于 0=更新"
+        },
+        "name": {
+          "type": "string",
+          "description": "档案名(数据库唯一约束)"
+        },
+        "format": {
+          "type": "string",
+          "enum": ["openai", "anthropic", "openai-responses"],
+          "description": "协议格式"
+        },
+        "base_url": {
+          "type": "string",
+          "description": "API 根地址,可省略"
+        },
+        "proxy": {
+          "type": "string",
+          "description": "出站代理(http/https/socks5),可省略"
+        },
+        "model": {
+          "type": "string",
+          "description": "模型名"
+        },
+        "api_key": {
+          "type": "string",
+          "format": "password",
+          "description": "API Key;新建必填,更新留空=沿用已存 key(传入即覆盖并重算 hint)"
+        },
+        "api_key_hint": {
+          "type": "string",
+          "description": "只读字段;服务端按 api_key 自动重算,传入值不生效"
+        },
+        "rate_per_second": {
+          "type": "number",
+          "format": "double",
+          "description": "每秒请求上限,0=不限"
+        },
+        "rate_per_minute": {
+          "type": "number",
+          "format": "double",
+          "description": "每分钟请求上限,0=不限"
+        },
+        "context_window_k": {
+          "type": "integer",
+          "description": "上下文窗口(K tokens);0=默认 200K,上限 1000"
+        },
+        "thinking_type": {
+          "type": "string",
+          "description": "思考开关(thinking.type):空=不发送,disabled,enabled"
+        },
+        "reasoning_effort": {
+          "type": "string",
+          "description": "思考强度:空=不发送,low/medium/high/xhigh/max"
+        },
+        "is_default": {
+          "type": "boolean",
+          "description": "是否激活;激活切换请用 POST /api/llm/profiles/active"
+        },
+        "priority": {
+          "type": "integer",
+          "description": "故障转移链排序权重,越大越靠前"
+        },
+        "pool_exclude": {
+          "type": "boolean",
+          "description": "true=不作为故障转移目标"
+        },
+        "streaming": {
+          "type": "boolean",
+          "nullable": true,
+          "description": "收发模式:true=流式,false=非流式;省略=流式"
+        },
+        "max_tokens": {
+          "type": "integer",
+          "description": "单次回复输出上限(token);负数会归 0;0=不发送该字段"
+        },
+        "max_tokens_field": {
+          "type": "string",
+          "description": "输出上限字段名(仅 openai 格式有效,取值 max_completion_tokens;其余情况被清空)"
+        },
+        "session_header_key": {
+          "type": "string",
+          "description": "自定义会话头名,空=不发送"
+        },
+        "retry": {
+          "$ref": "#/components/schemas/LLMRetryOverride"
+        }
+      }
+    },
+    "LLMRetryOverride": {
+      "type": "object",
+      "description": "档案级重试覆盖(建连/空响应/同 provider 安全窗口三层)。零值=继承全局策略,历史行为不变。",
+      "required": ["connect", "empty", "stream"],
+      "properties": {
+        "connect": {
+          "$ref": "#/components/schemas/LLMRetryRule"
+        },
+        "empty": {
+          "$ref": "#/components/schemas/LLMRetryRule"
+        },
+        "stream": {
+          "$ref": "#/components/schemas/LLMRetryRule"
+        }
+      }
+    },
+    "LLMRetryRule": {
+      "type": "object",
+      "required": ["attempts", "interval_ms"],
+      "properties": {
+        "attempts": {
+          "type": "integer",
+          "description": "重试次数:0=用默认(或继承全局),-1=显式关闭该层,大于 0=用该值;范围 [-1,20]"
+        },
+        "interval_ms": {
+          "type": "integer",
+          "description": "间隔(毫秒):0=该层默认间隔策略(通常指数退避),大于 0=固定间隔;范围 [0,3600000]"
+        }
+      }
+    },
+    "LLMRetryPolicy": {
+      "type": "object",
+      "description": "全局五层重试策略,每层均为一个 RetryRule(次数+间隔)。connect=SDK 建连重试(连接重置/超时/429/5xx,流开始前,默认 3 次指数退避);empty=SDK 空响应重试(完成但无 content block,仅 openai 格式,默认 2 次);stream=同 provider 安全窗口重试(未交付输出前的断流重放,默认 2 次、0.5s 起指数封顶 4s);breaker=轮询熔断(attempts=连续瞬时失败触发熔断次数,默认 3,-1=瞬时失败不熔断、硬失败仍立即熔断;interval_ms=固定冷却时长,0=默认 1/5/30 分钟梯度);intent=worker 以 model_error 收场后的整条意图重跑(默认 2 次、固定 3 秒)。connect/empty/stream 是每请求层,档案可用 LLMRetryOverride 覆盖;breaker/intent 是进程级、仅在此配置。全 0=全部走内置默认。保存时越界值自动夹取(attempts [-1,20],interval_ms [0,3600000])。",
+      "required": ["connect", "empty", "stream", "breaker", "intent"],
+      "properties": {
+        "connect": {
+          "$ref": "#/components/schemas/LLMRetryRule"
+        },
+        "empty": {
+          "$ref": "#/components/schemas/LLMRetryRule"
+        },
+        "stream": {
+          "$ref": "#/components/schemas/LLMRetryRule"
+        },
+        "breaker": {
+          "$ref": "#/components/schemas/LLMRetryRule"
+        },
+        "intent": {
+          "$ref": "#/components/schemas/LLMRetryRule"
+        }
+      }
+    },
+    "LLMPoolStatus": {
+      "type": "object",
+      "required": ["enabled", "bind_fallback", "chain"],
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "故障转移(轮询)总开关"
+        },
+        "bind_fallback": {
+          "type": "boolean",
+          "description": "显式绑定档案的兜底开关:开=绑定档案失败也回落到链,关=绑定档案独占(默认)"
+        },
+        "chain": {
+          "type": "array",
+          "items": {
+            "$ref": "#/components/schemas/LLMPoolMemberStatus"
+          },
+          "description": "链路成员(激活优先,其次 priority 降序);被排除的档案也列出并标记"
+        }
+      }
+    },
+    "LLMPoolMemberStatus": {
+      "type": "object",
+      "description": "轮询链中的一个成员及其熔断健康状态。",
+      "required": [
+        "profile_id",
+        "name",
+        "model",
+        "format",
+        "priority",
+        "active",
+        "excluded",
+        "state",
+        "fails",
+        "trips",
+        "cooldown_secs"
+      ],
+      "properties": {
+        "profile_id": {
+          "type": "string",
+          "description": "档案 ID(数字字符串)"
+        },
+        "name": {
+          "type": "string",
+          "description": "档案名"
+        },
+        "model": {
+          "type": "string",
+          "description": "模型名"
+        },
+        "format": {
+          "type": "string",
+          "description": "协议格式"
+        },
+        "priority": {
+          "type": "integer",
+          "description": "排序权重"
+        },
+        "active": {
+          "type": "boolean",
+          "description": "是否为全局激活档案"
+        },
+        "excluded": {
+          "type": "boolean",
+          "description": "是否被 pool_exclude 排除出故障转移链"
+        },
+        "state": {
+          "type": "string",
+          "enum": ["ok", "degraded", "tripped"],
+          "description": "熔断状态:ok=正常,degraded=有失败但未熔断,tripped=已熔断冷却中"
+        },
+        "fails": {
+          "type": "integer",
+          "description": "当前连续失败次数"
+        },
+        "trips": {
+          "type": "integer",
+          "description": "累计熔断次数"
+        },
+        "cooldown_secs": {
+          "type": "integer",
+          "description": "剩余冷却秒数,0=无冷却"
+        },
+        "last_error": {
+          "type": "string",
+          "description": "最近一次失败原因,可省略"
+        },
+        "last_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "最近一次熔断/失败时间(RFC3339),可省略"
+        }
+      }
+    },
+    "LLMModelsRequest": {
+      "type": "object",
+      "description": "拉取模型列表请求。api_key 留空时回退用 profile_id 指定档案存储的 key;无任何 key 直接返回 ok=false。",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "description": "provider 格式:openai / openai-responses 走 OpenAI 模型端点,其余(含空,默认 anthropic)走 Anthropic 端点并可能回退 OpenAI 路径"
+        },
+        "base_url": {
+          "type": "string",
+          "description": "API 根地址;留空按 provider 取官方默认(openai=https://api.openai.com/v1,anthropic=https://api.anthropic.com)"
+        },
+        "api_key": {
+          "type": "string",
+          "format": "password",
+          "description": "API Key(表单输入优先于档案存储的 key)"
+        },
+        "proxy": {
+          "type": "string",
+          "description": "出站代理(http/https/socks5)"
+        },
+        "profile_id": {
+          "type": "integer",
+          "format": "int64",
+          "nullable": true,
+          "description": "api_key 留空时,用该档案存储的 key 兜底"
+        }
+      }
+    },
+    "LLMModelsResult": {
+      "type": "object",
+      "required": ["ok"],
+      "properties": {
+        "ok": {
+          "type": "boolean",
+          "description": "是否成功取到模型列表(失败也返回 HTTP 200,以本字段区分)"
+        },
+        "models": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "模型 ID 列表,仅 ok=true 时返回(可能为空数组)"
+        },
+        "error": {
+          "type": "string",
+          "description": "失败原因(最后一个候选端点的错误),仅 ok=false 时返回"
+        }
+      }
+    }
+  }
+}

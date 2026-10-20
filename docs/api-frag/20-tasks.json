@@ -1,0 +1,1968 @@
+{
+  "paths": {
+    "/api/tasks": {
+      "get": {
+        "tags": ["tasks"],
+        "summary": "列出全部任务",
+        "description": "返回全部任务(不支持分页/过滤查询参数,过滤排序由前端完成;服务端排序:置顶任务优先、组内按置顶时间倒序,普通任务按 ID 倒序)。每个任务附带派生运行状态(created/queued/running/paused/终态)、全任务 token 汇总、目标进度(goals_total/goals_met)、运行中意图数(in_flight)、按严重度分档的漏洞计数(findings)、最近活动时间,以及归档阻塞标记。响应同时返回当前活跃任务 ID(active,空串=无活跃任务)。",
+        "operationId": "listTasks",
+        "responses": {
+          "200": {
+            "description": "任务列表与当前活跃任务 ID",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/TaskListResult"}
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": ["tasks"],
+        "summary": "新建任务",
+        "description": "创建任务并在后台异步启动(seed 目标解析、种子意图、目标分解、引擎运行,不阻塞返回)。description 空白时自动填「未命名任务」。可指定:任务分类、有序 LLM 配置链(第一项初始生效,空=用激活/全局配置)、关联来源任务(最多 8 个、不可重复且须存在,只读继承上下文)、关联企业(最多 32 个,创建时快照企业资产范围)、任务级超时秒数、planner 心跳间隔(默认/下限 600 秒)、创建时下发种子意图开关、资产覆盖度开关(默认开)、任务级资产拦截/允许规则。校验失败(分类/企业/来源任务/LLM 配置不存在或无效、规则格式错误)返回 400,落库失败返回 500。",
+        "operationId": "createTask",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/TaskCreateRequest"}
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "创建成功,返回任务对象(启动在后台继续进行)",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Task"}
+              }
+            }
+          },
+          "400": {
+            "description": "请求体非法或校验失败(LLM 配置 id 无效或不存在、关联任务超过 8 个/无效/重复/不存在、关联企业无效、拦截规则无效、任务分类不存在)",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          },
+          "500": {
+            "description": "数据库写入失败",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/{id}": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {"type": "string"},
+          "description": "任务 ID(数字字符串;本接口按精确 ID 查找,不接受 active 别名,当前活跃任务 ID 请从 GET /api/tasks 的 active 字段获取)"
+        }
+      ],
+      "get": {
+        "tags": ["tasks"],
+        "summary": "获取任务详情",
+        "description": "按任务 ID 精确查找,返回单个任务对象(结构与列表项一致),并带归档阻塞标记(archive_blocked_by_task_id:被哪个依赖任务阻塞归档)。注意:详情接口不聚合实时指标,tokens/goals_total/goals_met/in_flight/findings/last_activity_unix 返回零值,前端用 /api/stats 补充。",
+        "operationId": "getTask",
+        "responses": {
+          "200": {
+            "description": "任务对象",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Task"}
+              }
+            }
+          },
+          "404": {
+            "description": "任务不存在",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": ["tasks"],
+        "summary": "修改任务元数据",
+        "description": "只修改列表展示用元数据:名称与置顶状态。不触碰生命周期状态、调度,description/goal 不可改。至少提供 name 或 pinned 之一(否则 400);name 去首尾空白后须非空且最多 200 字符。请求体上限 16KB。返回更新后的任务对象。",
+        "operationId": "updateTaskMetadata",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/TaskMetadataPatchRequest"}
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "更新后的任务对象",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Task"}
+              }
+            }
+          },
+          "400": {
+            "description": "JSON 非法、未提供任何字段、名称为空或超过 200 字符",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          },
+          "404": {
+            "description": "任务不存在",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          },
+          "413": {
+            "description": "请求正文过大(超过 16KB)",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          },
+          "500": {
+            "description": "数据库更新失败",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": ["tasks"],
+        "summary": "删除任务",
+        "description": "先取消该任务的主 Agent 对话,再等待任务静默(全部运行中的 planner/worker 返回,等待上限 10 秒;超时或有 Agent 未退出返回 409,删除自动中止),然后删除任务、探索图并按选项级联清理资产/流量/文件/发现/LLM 记录(默认全部保留)。若数据已提交但提交后收尾失败,仍返回 200 并附 cleanup_warning 说明。任务正在删除中返回 409。",
+        "operationId": "deleteTask",
+        "requestBody": {
+          "required": false,
+          "description": "可选的级联清理选项;请求体可整体省略,各开关默认 false(保留关联数据)",
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/TaskDeleteOptions"}
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "删除完成,返回可审计的清理计数",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/TaskDeleteResult"}
+              }
+            }
+          },
+          "400": {
+            "description": "任务 id 非数字,或请求体不是合法 JSON",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          },
+          "409": {
+            "description": "任务正在删除中,或仍有运行中的 Agent(含未结束的主 Agent 对话/旁路问答)未静默",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          },
+          "500": {
+            "description": "删除过程数据库错误(且尚未提交)",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/{id}/category": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {"type": "string"},
+          "description": "任务 ID(数字字符串)"
+        }
+      ],
+      "patch": {
+        "tags": ["task-categories"],
+        "summary": "设置单个任务的分类",
+        "description": "把任务移入指定分类;category_id 显式传 null 表示清除分类(回到未分类)。category_id 键必须出现(可为 null),分类不存在返回 404。请求体上限 16KB。返回更新后的任务对象(不中断任务运行)。",
+        "operationId": "updateTaskCategory",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/TaskCategoryAssignmentRequest"}
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "更新后的任务对象",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Task"}
+              }
+            }
+          },
+          "400": {
+            "description": "JSON 非法、缺少 category_id 键或 id 无效(<=0)",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          },
+          "404": {
+            "description": "任务或分类不存在",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          },
+          "409": {
+            "description": "分类名称冲突(不应发生)或任务状态冲突",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          },
+          "413": {
+            "description": "请求正文过大(超过 16KB)",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          },
+          "500": {
+            "description": "数据库更新失败",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/category/batch": {
+      "post": {
+        "tags": ["task-categories"],
+        "summary": "批量设置任务分类",
+        "description": "把一批任务(1-100 个,自动去空白/去重并保序)移入同一分类,或传 category_id=null 批量清除分类。数据库写入原子:要么全部移动要么不动;items 逐条报告结果,标记 task not found 的项表示该任务已不存在(被删除),而非移动了一半。请求体上限 16KB。",
+        "operationId": "batchUpdateTasksCategory",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/TaskCategoryBatchRequest"}
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "逐任务结果与目标分类",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/TaskCategoryBatchResult"}
+              }
+            }
+          },
+          "400": {
+            "description": "JSON 非法、缺少 category_id 键、id 无效,或 task_ids 数量不在 1-100 范围",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          },
+          "404": {
+            "description": "分类不存在(整体失败)",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          },
+          "409": {
+            "description": "分类名称冲突(不应发生)",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          },
+          "413": {
+            "description": "请求正文过大(超过 16KB)",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          },
+          "500": {
+            "description": "数据库写入失败",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/control/batch": {
+      "post": {
+        "tags": ["tasks"],
+        "summary": "批量暂停/恢复任务",
+        "description": "对 1-100 个任务统一执行 pause 或 resume(pause 暂停 planner+workers 并取消主 Agent 当前对话轮;resume 仅对已暂停任务生效,受全局并发上限约束可能进入排队)。items 逐条返回:成功时带 ok/status(paused|running|queued)/queued,失败时带 error(bad task id、task not found、终态任务不能执行暂停、任务已经暂停等)。请求体上限 256KB。",
+        "operationId": "batchControlTasks",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/TaskBatchControlRequest"}
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "逐任务控制结果(单项失败不影响其余任务)",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/TaskBatchControlResult"}
+              }
+            }
+          },
+          "400": {
+            "description": "JSON 非法、action 不是 pause|resume,或 task_ids 数量不在 1-100 范围",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/task-categories": {
+      "get": {
+        "tags": ["task-categories"],
+        "summary": "列出任务分类",
+        "description": "返回全部分类,含每个分类下未删除任务数(task_count)。无查询参数。",
+        "operationId": "listTaskCategories",
+        "responses": {
+          "200": {
+            "description": "分类列表",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["categories"],
+                  "properties": {
+                    "categories": {
+                      "type": "array",
+                      "items": {"$ref": "#/components/schemas/TaskCategory"}
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "数据库查询失败",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": ["task-categories"],
+        "summary": "新建任务分类",
+        "description": "创建分类。名称去除多余空白后 1-80 字符(超限或为空返回 400);同名分类(大小写不敏感)已存在返回 409。请求体上限 16KB。返回 201 与新分类对象。",
+        "operationId": "createTaskCategory",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/TaskCategoryNameRequest"}
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "创建成功",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/TaskCategory"}
+              }
+            }
+          },
+          "400": {
+            "description": "JSON 非法、名称为空或超过 80 字符",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          },
+          "409": {
+            "description": "分类名称已存在",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          },
+          "413": {
+            "description": "请求正文过大(超过 16KB)",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          },
+          "500": {
+            "description": "数据库写入失败",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/task-categories/{id}": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {"type": "integer", "format": "int64"},
+          "description": "分类 ID"
+        }
+      ],
+      "patch": {
+        "tags": ["task-categories"],
+        "summary": "重命名任务分类",
+        "description": "重命名分类并同步更新全部在册任务的分类名缓存。名称规则同创建(1-80 字符);同名冲突返回 409;分类不存在返回 404。请求体上限 16KB。",
+        "operationId": "renameTaskCategory",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/TaskCategoryNameRequest"}
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "更新后的分类对象",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/TaskCategory"}
+              }
+            }
+          },
+          "400": {
+            "description": "分类 id 非数字、JSON 非法、名称为空或超过 80 字符",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          },
+          "404": {
+            "description": "分类不存在",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          },
+          "409": {
+            "description": "分类名称已存在",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          },
+          "413": {
+            "description": "请求正文过大(超过 16KB)",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          },
+          "500": {
+            "description": "数据库更新失败",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": ["task-categories"],
+        "summary": "删除任务分类",
+        "description": "删除分类;其下任务自动回到未分类(不影响任务本身)。分类不存在返回 404。",
+        "operationId": "deleteTaskCategory",
+        "responses": {
+          "200": {
+            "description": "删除成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["deleted"],
+                  "properties": {
+                    "deleted": {"type": "integer", "format": "int64", "description": "被删除的分类 ID"}
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "分类 id 非数字",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          },
+          "404": {
+            "description": "分类不存在",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          },
+          "500": {
+            "description": "数据库删除失败",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/task-templates": {
+      "get": {
+        "tags": ["task-templates"],
+        "summary": "列出任务模板",
+        "description": "返回全部任务模板,含各模板的任务级拦截规则快照(intercept_rules,恒为数组)。无查询参数。",
+        "operationId": "listTaskTemplates",
+        "responses": {
+          "200": {
+            "description": "模板列表",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["templates"],
+                  "properties": {
+                    "templates": {
+                      "type": "array",
+                      "items": {"$ref": "#/components/schemas/TaskTemplate"}
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "数据库查询失败",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": ["task-templates"],
+        "summary": "新建任务模板",
+        "description": "创建任务模板。name(去空白后 1-120 字符)、description、goal(各 1-16000 字符)必填;category_id 可空(默认分类);intercept_rules 为任务级资产拦截/允许规则数组。名称唯一(大小写不敏感),冲突返回 409。请求体上限 512KB。返回 201 与模板对象。",
+        "operationId": "createTaskTemplate",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/TaskTemplateCreateRequest"}
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "创建成功",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/TaskTemplate"}
+              }
+            }
+          },
+          "400": {
+            "description": "JSON 非法、字段为空/超长或拦截规则无效",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          },
+          "409": {
+            "description": "模板名称已存在",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          },
+          "413": {
+            "description": "请求正文过大(超过 512KB)",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          },
+          "500": {
+            "description": "数据库写入失败",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/task-templates/{id}": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {"type": "integer", "format": "int64"},
+          "description": "模板 ID"
+        }
+      ],
+      "patch": {
+        "tags": ["task-templates"],
+        "summary": "修改任务模板",
+        "description": "部分更新:name/description/goal 提供非空新值(校验规则同创建);category_id 与 intercept_rules 按「JSON 键出现即视为要更新」判断——显式传 category_id=null 清除默认分类,传空 intercept_rules 数组清空规则,省略键则保持不变。至少提供 name、description、goal、category_id、intercept_rules 之一。请求体上限 512KB。",
+        "operationId": "updateTaskTemplate",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/TaskTemplatePatchRequest"}
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "更新后的模板对象",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/TaskTemplate"}
+              }
+            }
+          },
+          "400": {
+            "description": "模板 id 非数字、JSON 非法、未提供任何字段、字段为空/超长或拦截规则无效",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          },
+          "404": {
+            "description": "模板不存在",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          },
+          "409": {
+            "description": "模板名称已存在",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          },
+          "413": {
+            "description": "请求正文过大(超过 512KB)",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          },
+          "500": {
+            "description": "数据库更新失败",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": ["task-templates"],
+        "summary": "删除任务模板",
+        "description": "删除模板。模板不存在返回 404。",
+        "operationId": "deleteTaskTemplate",
+        "responses": {
+          "200": {
+            "description": "删除成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["deleted"],
+                  "properties": {
+                    "deleted": {"type": "integer", "format": "int64", "description": "被删除的模板 ID"}
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "模板 id 非数字",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          },
+          "404": {
+            "description": "模板不存在",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          },
+          "500": {
+            "description": "数据库删除失败",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/active": {
+      "post": {
+        "tags": ["tasks"],
+        "summary": "切换活跃任务",
+        "description": "把指定任务设为当前活跃任务,并恢复其引擎(幂等;排队中的任务仅设为活跃、不启动引擎,由并发调节补位)。任务不存在返回 404。",
+        "operationId": "setActiveTask",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["id"],
+                "properties": {
+                  "id": {"type": "string", "description": "要设为活跃的任务 ID(数字字符串)"}
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "设置成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["active"],
+                  "properties": {
+                    "active": {"type": "string", "description": "当前活跃任务 ID"}
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "JSON 非法",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          },
+          "404": {
+            "description": "任务不存在",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/{id}/control": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {"type": "string"},
+          "description": "任务 ID(数字字符串)"
+        }
+      ],
+      "post": {
+        "tags": ["tasks"],
+        "summary": "暂停/恢复单个任务",
+        "description": "action=pause:暂停任务的自主执行(planner+workers),并取消主 Agent 当前对话轮;终态任务不能暂停、已暂停任务重复暂停、任务删除中均返回 409。action=resume:恢复已暂停任务,受全局并发上限约束,可能进入排队(status=queued)。恢复仅对已暂停任务有意义(其他任务由内部调节管理)。",
+        "operationId": "controlTask",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/TaskControlRequest"}
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "控制结果",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/TaskControlResult"}
+              }
+            }
+          },
+          "400": {
+            "description": "JSON 非法或 action 不是 pause|resume",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          },
+          "404": {
+            "description": "任务不存在",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          },
+          "409": {
+            "description": "终态任务不能执行暂停、任务已经暂停、任务正在删除等状态冲突",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/{id}/llm": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {"type": "string"},
+          "description": "任务 ID(数字字符串)"
+        }
+      ],
+      "put": {
+        "tags": ["tasks"],
+        "summary": "更新任务 LLM 配置链",
+        "description": "整体替换任务级 LLM 配置链(有序数组,第一项初始生效;空数组=回落激活/全局配置)。任何生命周期状态(含终态)都可修改——任务结束后主 Agent 对话仍走这条链。配置 id 须存在且已设置 API Key(否则 400)。换链会顺带重开因 LLM 额度耗尽而 blocked 的意图(终态任务除外,reopened_intents 返回重开数);若活跃配置发生变化,响应附 switch_event 审计事件(仅影响后续 LLM 调用,进行中的调用仍用原 provider)。",
+        "operationId": "updateTaskLLMProfiles",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/TaskLLMProfilesUpdateRequest"}
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "更新后的链状态与重开计数",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/TaskLLMProfilesUpdateResult"}
+              }
+            }
+          },
+          "400": {
+            "description": "JSON 非法、LLM 配置 id 无效/重复/不存在或未设置 API Key、落库校验失败",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          },
+          "404": {
+            "description": "任务不存在",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/{id}/llm/resolution": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {"type": "string"},
+          "description": "任务 ID(数字字符串)"
+        }
+      ],
+      "get": {
+        "tags": ["tasks"],
+        "summary": "查询任务各角色实际生效的 LLM",
+        "description": "按角色(mainagent/planner/worker)解析实际会使用的 LLM 配置,优先级:角色 Agent 绑定 → 任务显式配置链 → 激活/全局数据库配置 → 环境变量配置。available=false 时 reason 给出原因(未设置 API Key、格式无效、链额度耗尽、没有可用配置等)。数据库读取失败返回 500。",
+        "operationId": "getTaskLLMResolution",
+        "responses": {
+          "200": {
+            "description": "各角色的 LLM 解析结果",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/TaskLLMResolutions"}
+              }
+            }
+          },
+          "404": {
+            "description": "任务不存在",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          },
+          "500": {
+            "description": "读取 agent/LLM 配置失败",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/{id}/intents/{iid}/control": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {"type": "string"},
+          "description": "任务 ID(数字字符串)"
+        },
+        {
+          "name": "iid",
+          "in": "path",
+          "required": true,
+          "schema": {"type": "integer", "format": "int64", "minimum": 1},
+          "description": "意图节点 ID(探索图节点 ID)"
+        }
+      ],
+      "post": {
+        "tags": ["tasks"],
+        "summary": "控制单个意图",
+        "description": "pause:仅运行中的意图可暂停(先停 worker 再改状态)。resume:仅已暂停的意图可恢复(回到 open,等待 worker 重新认领)。cancel:删除意图,open/running/paused 状态均可;必须填 reason(删除原因,会告知 planner 重新规划);mode=soft(默认)为假删除——state 置为 deleted 并记录原因,保留节点与全部产出/血缘;mode=hard 为真删除——物理删除该意图及仅由它支撑的独占子孙节点(级联到叶子,共享节点/goal/任务根事实保留),响应返回 deleted 级联清理计数。继承意图只读,不能控制。",
+        "operationId": "controlTaskIntent",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/TaskIntentControlRequest"}
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "意图控制结果(hard 删除时 state 为空字符串,凭 deleted 字段从列表移除)",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/TaskIntentControlResult"}
+              }
+            }
+          },
+          "400": {
+            "description": "iid 非正整数、JSON 非法或 action 不是 pause|resume|cancel",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          },
+          "404": {
+            "description": "任务不存在",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          },
+          "409": {
+            "description": "任务正在删除、意图不存在/不是意图/继承意图只读、状态不满足(如仅运行中的意图可以暂停、请填写删除原因、意图状态冲突)",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/{id}/intents/{iid}/messages": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {"type": "string"},
+          "description": "任务 ID(数字字符串)"
+        },
+        {
+          "name": "iid",
+          "in": "path",
+          "required": true,
+          "schema": {"type": "integer", "format": "int64", "minimum": 1},
+          "description": "意图节点 ID(须为已暂停的 Worker 意图)"
+        }
+      ],
+      "post": {
+        "tags": ["tasks"],
+        "summary": "向暂停的 Worker 发送消息",
+        "description": "以人工消息继续一条已暂停的 Worker 意图:消息作为下一轮输入,复用暂停/恢复机制(从 transcript 恢复),并在独立 goroutine 中立即执行(不占 worker 池)。前置条件:任务不在删除/暂停/排队/终态/收尾中,且意图 state=paused。message 去空白后 1-4000 字符;request_id 必填,1-128 位字母/数字/-/_/./:,用于幂等与追踪。消息支持 @引用语法,服务端把引用的记录快照展开进消息(引用格式错误返回 400)。内存态操作:进程重启后意图按 transcript 恢复,不含该消息。请求体上限 64KB。",
+        "operationId": "sendTaskIntentMessage",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/TaskIntentMessageRequest"}
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "消息已接受,意图进入 running",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/TaskIntentMessageResult"}
+              }
+            }
+          },
+          "400": {
+            "description": "iid 非正整数、JSON 非法、消息为空/超长、request_id 格式非法或 @引用格式错误",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          },
+          "404": {
+            "description": "任务或意图不存在",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          },
+          "409": {
+            "description": "任务正在删除/已暂停/排队中/终态/正在收尾、继承意图只读、节点不是意图或意图不是 paused 状态",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          },
+          "413": {
+            "description": "请求体过大(超过 64KB)",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          },
+          "500": {
+            "description": "读取意图节点或启动执行失败",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/{id}/intents/{iid}/rerun": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {"type": "string"},
+          "description": "任务 ID(数字字符串)"
+        },
+        {
+          "name": "iid",
+          "in": "path",
+          "required": true,
+          "schema": {"type": "integer", "format": "int64", "minimum": 1},
+          "description": "意图节点 ID(须为 blocked/exhausted/stopped 状态)"
+        }
+      ],
+      "post": {
+        "tags": ["tasks"],
+        "summary": "重跑单条意图",
+        "description": "把一条没跑成功的意图(blocked/exhausted/stopped)置回 open,worker 会重新认领、从头再跑;已写回图谱的 fact/finding/asset 保留。若任务已终态/暂停则顺带复活(可能进入排队,queued=true)。意图不是可重跑状态返回 409(状态会回滚);复活失败返回 500 并回滚意图状态。",
+        "operationId": "rerunTaskIntent",
+        "responses": {
+          "200": {
+            "description": "重开结果(reopened=重开的意图 ID)",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/TaskIntentRerunResult"}
+              }
+            }
+          },
+          "400": {
+            "description": "iid 非数字",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          },
+          "404": {
+            "description": "任务不存在",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          },
+          "409": {
+            "description": "任务正在删除,或该意图不是可重跑状态(仅 blocked/exhausted/stopped 可重跑)",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          },
+          "500": {
+            "description": "读取/重开意图或复活任务失败",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/{id}/intents/rerun-blocked": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {"type": "string"},
+          "description": "任务 ID(数字字符串)"
+        }
+      ],
+      "post": {
+        "tags": ["tasks"],
+        "summary": "批量重跑 blocked 意图",
+        "description": "把本任务全部 blocked 意图一键置回 open 并复活任务(适合一次网络/LLM 断连导致多条 blocked 后的全部重试),返回重开条数。复活失败返回 500 并逐条回滚意图状态。无请求体。",
+        "operationId": "rerunTaskBlockedIntents",
+        "responses": {
+          "200": {
+            "description": "批量重开结果(reopened=重开条数)",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/TaskIntentRerunResult"}
+              }
+            }
+          },
+          "404": {
+            "description": "任务不存在",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          },
+          "409": {
+            "description": "任务正在删除,无法重跑意图",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          },
+          "500": {
+            "description": "列出/重开意图或复活任务失败",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/{id}/chat/status": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {"type": "string"},
+          "description": "任务 ID(数字字符串);可传 active 表示当前活跃任务"
+        }
+      ],
+      "get": {
+        "tags": ["tasks"],
+        "summary": "查询主 Agent 对话状态",
+        "description": "返回该任务主 Agent 当前是否有一轮对话在跑。这是权威状态(活动时间戳不可靠:一次工具或 LLM 调用可能持续数分钟不产生中间帧)。",
+        "operationId": "getTaskChatStatus",
+        "responses": {
+          "200": {
+            "description": "对话运行状态",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["running"],
+                  "properties": {
+                    "running": {"type": "boolean", "description": "true=主 Agent 当前有一轮对话在执行"}
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "任务不存在(或无活跃任务且传了 active)",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/{id}/chat/stop": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {"type": "string"},
+          "description": "任务 ID(数字字符串);可传 active 表示当前活跃任务"
+        }
+      ],
+      "post": {
+        "tags": ["tasks"],
+        "summary": "停止主 Agent 当前对话",
+        "description": "手动停止按钮:只取消当前进行中的主 Agent 对话轮(用户可立即发新消息);planner/workers 不受影响,继续运行。无运行中对话时返回 status=idle。",
+        "operationId": "stopTaskChat",
+        "responses": {
+          "200": {
+            "description": "停止结果",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["status"],
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": ["stopping", "idle"],
+                      "description": "stopping=已发出取消信号;idle=本就没有运行中的对话"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "任务不存在(或无活跃任务且传了 active)",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/{id}/coverage": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {"type": "string"},
+          "description": "任务 ID(数字字符串)"
+        }
+      ],
+      "get": {
+        "tags": ["tasks"],
+        "summary": "查询任务资产覆盖度",
+        "description": "粗粒度资产测试覆盖度(供参考,非精确指标):分母=命中任务范围(task_scope,含来源任务范围)的资产数,已测=其中锚定到探索图 fact 节点的资产数;by_type 按资产类型给出总数/已测。任务创建时关闭覆盖度(coverage_enabled=false)则短路返回 {enabled:false}(其余字段零值);资产库未启用返回 503。pct 在分母为 0 时为 null。",
+        "operationId": "getTaskCoverage",
+        "responses": {
+          "200": {
+            "description": "覆盖度汇总",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/TaskCoverage"}
+              }
+            }
+          },
+          "404": {
+            "description": "任务不存在",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          },
+          "500": {
+            "description": "覆盖度计算失败",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          },
+          "503": {
+            "description": "资产存储(asset store)未启用",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/{id}/coverage-graph": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {"type": "string"},
+          "description": "任务 ID(数字字符串)"
+        }
+      ],
+      "get": {
+        "tags": ["tasks"],
+        "summary": "查询任务覆盖度图谱",
+        "description": "力导向图数据:任务(含直接只读来源任务)范围内全部资产节点(每种类型,携带 tested/in_scope)+ 仅用于连接的根域名/公司节点(连接节点 in_scope=false,前端置灰);边为 child→parent 包含关系(endpoint→service→subdomain/ip→root_domain→company,app→company)。tested 反映当前或来源任务的 fact 锚定。资产库未启用返回 503。",
+        "operationId": "getTaskCoverageGraph",
+        "responses": {
+          "200": {
+            "description": "图谱节点与边",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/TaskCoverageGraphData"}
+              }
+            }
+          },
+          "404": {
+            "description": "任务不存在",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          },
+          "500": {
+            "description": "图谱构建失败",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          },
+          "503": {
+            "description": "资产存储(asset store)未启用",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Error"}
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "schemas": {
+    "Task": {
+      "type": "object",
+      "description": "任务对象(列表与详情共用结构)。注意:tokens/goals_total/goals_met/in_flight/findings/last_activity_unix 等实时聚合计数仅在 GET /api/tasks 列表接口填充;单个任务接口(getTask / PATCH 类)返回零值,前端用 /api/stats 补充。",
+      "required": ["id", "exploration_id", "name", "pinned", "description", "goal", "status", "created_at", "created_unix", "completed_at", "completed_unix", "last_activity_unix", "paused", "queued", "tokens", "goals_total", "goals_met", "in_flight", "findings", "llm_profile_ids", "llm_failover_state", "source_task_ids", "company_ids", "coverage_enabled"],
+      "properties": {
+        "id": {"type": "string", "description": "任务 ID(数字字符串)"},
+        "exploration_id": {"type": "integer", "format": "int64", "description": "对应探索图 ID"},
+        "name": {"type": "string", "description": "任务名称;空=未命名"},
+        "category_id": {"type": "integer", "format": "int64", "nullable": true, "description": "任务分类 ID;未分类时字段缺省"},
+        "category_name": {"type": "string", "description": "任务分类名称(缓存);未分类时字段缺省"},
+        "pinned": {"type": "boolean", "description": "是否置顶"},
+        "pinned_at": {"type": "string", "description": "置顶时间(RFC3339);未置顶时字段缺省"},
+        "description": {"type": "string", "description": "任务描述"},
+        "goal": {"type": "string", "description": "任务目标"},
+        "status": {
+          "type": "string",
+          "description": "派生运行状态(综合持久生命周期与引擎内存状态)",
+          "enum": ["created", "queued", "running", "paused", "done", "failed", "timeout"]
+        },
+        "created_at": {"type": "string", "description": "创建时间(RFC3339)"},
+        "created_unix": {"type": "integer", "format": "int64", "description": "创建时间(unix 秒,用于计算运行时长)"},
+        "completed_at": {"type": "string", "description": "完成时间(RFC3339);空字符串=未完成"},
+        "completed_unix": {"type": "integer", "format": "int64", "description": "完成时间(unix 秒);0=未完成"},
+        "last_activity_unix": {"type": "integer", "format": "int64", "description": "最近活动时间(unix 秒,取内存心跳与持久化值的较大者);0=无"},
+        "paused": {"type": "boolean", "description": "持久化暂停标记"},
+        "queued": {"type": "boolean", "description": "是否排队等待并发名额"},
+        "tokens": {"$ref": "#/components/schemas/TaskTokenTotals"},
+        "goals_total": {"type": "integer", "description": "目标总数"},
+        "goals_met": {"type": "integer", "description": "已达成目标数"},
+        "in_flight": {"type": "integer", "description": "运行中 Worker 数(state=running 的意图)"},
+        "findings": {"$ref": "#/components/schemas/TaskFindingSeverity"},
+        "llm_profile_id": {"type": "integer", "format": "int64", "nullable": true, "description": "任务当前生效的单 LLM 配置 ID(旧字段);缺省=默认"},
+        "llm_profile_ids": {"type": "array", "items": {"type": "integer", "format": "int64"}, "description": "有序任务级 LLM 配置链(可为空数组=用全局)"},
+        "active_llm_profile_id": {"type": "integer", "format": "int64", "nullable": true, "description": "链内当前生效配置 ID;null/缺省=链额度耗尽或无链"},
+        "llm_failover_state": {
+          "type": "string",
+          "description": "任务 LLM 链故障转移状态",
+          "enum": ["default", "ready", "chain_exhausted"]
+        },
+        "llm_failover_reason": {"type": "string", "description": "链耗尽等原因说明;正常时字段缺省"},
+        "source_task_ids": {"type": "array", "items": {"type": "string"}, "description": "只读继承上下文的来源任务 ID(字符串数字)"},
+        "archive_blocked_by_task_id": {"type": "string", "description": "归档被该依赖任务阻塞时给出其 ID;无阻塞时字段缺省"},
+        "company_ids": {"type": "array", "items": {"type": "integer", "format": "int64"}, "description": "关联企业 ID"},
+        "coverage_enabled": {"type": "boolean", "description": "资产覆盖度功能开关(创建时确定)"}
+      }
+    },
+    "TaskTokenTotals": {
+      "type": "object",
+      "description": "全任务(所有 Agent)token 汇总",
+      "required": ["input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"],
+      "properties": {
+        "input_tokens": {"type": "integer"},
+        "output_tokens": {"type": "integer"},
+        "cache_read_tokens": {"type": "integer"},
+        "cache_write_tokens": {"type": "integer"}
+      }
+    },
+    "TaskFindingSeverity": {
+      "type": "object",
+      "description": "任务已登记漏洞数(按严重度分档)",
+      "required": ["critical", "high", "medium", "low"],
+      "properties": {
+        "critical": {"type": "integer"},
+        "high": {"type": "integer"},
+        "medium": {"type": "integer"},
+        "low": {"type": "integer"}
+      }
+    },
+    "TaskListResult": {
+      "type": "object",
+      "required": ["tasks", "active"],
+      "properties": {
+        "tasks": {"type": "array", "items": {"$ref": "#/components/schemas/Task"}},
+        "active": {"type": "string", "description": "当前活跃任务 ID;空串=无活跃任务"}
+      }
+    },
+    "TaskCreateRequest": {
+      "type": "object",
+      "required": ["description", "goal"],
+      "properties": {
+        "name": {"type": "string", "description": "可选任务名称;省略/空=未命名"},
+        "category_id": {"type": "integer", "format": "int64", "nullable": true, "description": "任务分类 ID;省略/null=未分类;不存在返回 400"},
+        "description": {"type": "string", "description": "任务描述;空白时服务端自动填「未命名任务」"},
+        "goal": {"type": "string", "description": "任务目标"},
+        "llm_profile_id": {"type": "integer", "format": "int64", "nullable": true, "description": "兼容旧字段:指定单个 LLM 配置;仅在 llm_profile_ids 为空时生效"},
+        "llm_profile_ids": {"type": "array", "items": {"type": "integer", "format": "int64"}, "description": "有序任务级 LLM 配置链,第一项初始生效;空/省略=用激活或全局配置。id 须存在且已设置 API Key,不可重复"},
+        "source_task_ids": {"type": "array", "items": {"type": "string"}, "description": "关联来源任务 ID(字符串数字),只读继承上下文;最多 8 个,不可重复,须存在"},
+        "company_ids": {"type": "array", "items": {"type": "integer", "format": "int64"}, "description": "关联企业 ID,创建时快照企业资产范围;最多 32 个有效企业"},
+        "timeout_seconds": {"type": "integer", "description": "任务级超时(秒);0/省略=不限时;负数按 0 处理", "default": 0},
+        "plan_heartbeat_seconds": {"type": "integer", "description": "planner 心跳触发间隔(秒);0/省略=默认 600,低于 600 自动抬到 600", "default": 600},
+        "seed_first_intent": {"type": "boolean", "nullable": true, "description": "创建时直接下发一条种子意图(内容=描述+目标),worker 免等首轮 planner 直接开跑;省略/null=默认关闭", "default": false},
+        "coverage_enabled": {"type": "boolean", "nullable": true, "description": "资产覆盖度功能;省略/null=默认开(true);false=关闭覆盖度计算/展示与范围自动累积", "default": true},
+        "intercept_rules": {"type": "array", "items": {"$ref": "#/components/schemas/TaskInterceptRule"}, "description": "任务级资产拦截/允许规则(创建时录入,存任务级规则表)"}
+      }
+    },
+    "TaskInterceptRule": {
+      "type": "object",
+      "description": "任务级资产拦截/允许规则(创建任务与任务模板共用)",
+      "required": ["kind", "pattern"],
+      "properties": {
+        "enabled": {"type": "boolean", "description": "是否启用", "default": false},
+        "action": {"type": "string", "enum": ["block", "allow"], "description": "拦截动作;省略/空默认 block", "default": "block"},
+        "kind": {"type": "string", "enum": ["exact_domain", "exact_url", "fuzzy_domain", "fuzzy_ip", "fuzzy_url", "exact_ip", "cidr"], "description": "匹配类型;exact_ip 须为合法 IP 地址,cidr 须为合法网段(形如 192.168.0.0/16)"},
+        "pattern": {"type": "string", "description": "匹配模式(去首尾空白后不能为空)"},
+        "note": {"type": "string", "description": "备注"}
+      }
+    },
+    "TaskMetadataPatchRequest": {
+      "type": "object",
+      "description": "任务元数据修改;至少提供 name 或 pinned 之一",
+      "properties": {
+        "name": {"type": "string", "description": "新任务名称(去首尾空白后 1-200 字符;提供时不可为空)"},
+        "pinned": {"type": "boolean", "description": "是否置顶"}
+      }
+    },
+    "TaskDeleteOptions": {
+      "type": "object",
+      "description": "删除任务时的级联清理选项;全部默认 false(保留关联数据)",
+      "properties": {
+        "delete_assets": {"type": "boolean", "description": "同时删除任务独占资产", "default": false},
+        "delete_traffic": {"type": "boolean", "description": "同时删除任务关联流量", "default": false},
+        "delete_files": {"type": "boolean", "description": "同时删除任务工作目录文件", "default": false},
+        "delete_findings": {"type": "boolean", "description": "同时删除任务产出的发现", "default": false},
+        "delete_llm_records": {"type": "boolean", "description": "同时删除任务 LLM 调用记录", "default": false}
+      }
+    },
+    "TaskDeleteResult": {
+      "type": "object",
+      "description": "删除结果(可审计的清理计数)",
+      "required": ["deleted", "assets_deleted", "assets_detached", "traffic_deleted", "files_deleted", "findings_deleted", "llm_records_deleted"],
+      "properties": {
+        "deleted": {"type": "string", "description": "被删除的任务 ID"},
+        "assets_deleted": {"type": "integer", "format": "int64", "description": "删除的资产数"},
+        "assets_detached": {"type": "integer", "format": "int64", "description": "解除关联(未删除)的资产数"},
+        "traffic_deleted": {"type": "integer", "format": "int64", "description": "删除的流量记录数"},
+        "files_deleted": {"type": "boolean", "description": "是否删除了任务文件"},
+        "findings_deleted": {"type": "integer", "format": "int64", "description": "删除的发现数"},
+        "llm_records_deleted": {"type": "integer", "format": "int64", "description": "删除的 LLM 调用记录数"},
+        "cleanup_warning": {"type": "string", "description": "数据已删除但提交后收尾失败时的警告信息;正常时字段缺省"}
+      }
+    },
+    "TaskControlRequest": {
+      "type": "object",
+      "required": ["action"],
+      "properties": {
+        "action": {"type": "string", "enum": ["pause", "resume"], "description": "pause=暂停(planner+workers+主 Agent 当前轮);resume=恢复已暂停任务"}
+      }
+    },
+    "TaskControlResult": {
+      "type": "object",
+      "required": ["id", "paused", "queued", "status"],
+      "properties": {
+        "id": {"type": "string", "description": "任务 ID"},
+        "paused": {"type": "boolean", "description": "pause 成功后为 true"},
+        "queued": {"type": "boolean", "description": "resume 后进入排队(并发名额未释放)时为 true"},
+        "status": {"type": "string", "enum": ["paused", "running", "queued"], "description": "操作后任务状态:pause→paused;resume→running 或 queued"}
+      }
+    },
+    "TaskBatchControlRequest": {
+      "type": "object",
+      "required": ["task_ids", "action"],
+      "properties": {
+        "task_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 100, "description": "任务 ID 列表(自动去空白/规范化/去重并保序;1-100 个)"},
+        "action": {"type": "string", "enum": ["pause", "resume"], "description": "统一执行的动作"}
+      }
+    },
+    "TaskBatchControlItem": {
+      "type": "object",
+      "required": ["id", "ok"],
+      "properties": {
+        "id": {"type": "string", "description": "请求中的任务 ID(原样回显,含无效项)"},
+        "ok": {"type": "boolean", "description": "该任务控制是否成功"},
+        "status": {"type": "string", "enum": ["paused", "running", "queued"], "description": "成功时的任务状态;失败时字段缺省"},
+        "queued": {"type": "boolean", "description": "成功且 resume 进入排队时为 true;失败时字段缺省"},
+        "error": {"type": "string", "description": "失败原因(bad task id / task not found / 终态任务不能执行暂停 / 任务已经暂停 等);成功时字段缺省"}
+      }
+    },
+    "TaskBatchControlResult": {
+      "type": "object",
+      "required": ["items"],
+      "properties": {
+        "items": {"type": "array", "items": {"$ref": "#/components/schemas/TaskBatchControlItem"}}
+      }
+    },
+    "TaskCategory": {
+      "type": "object",
+      "description": "任务分类",
+      "required": ["id", "name", "task_count", "created_at", "updated_at"],
+      "properties": {
+        "id": {"type": "integer", "format": "int64"},
+        "name": {"type": "string", "description": "分类名称"},
+        "task_count": {"type": "integer", "description": "该分类下未删除的任务数"},
+        "created_at": {"type": "string", "description": "创建时间(RFC3339)"},
+        "updated_at": {"type": "string", "description": "更新时间(RFC3339)"}
+      }
+    },
+    "TaskCategoryNameRequest": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": {"type": "string", "description": "分类名称(内部空白归一后 1-80 字符;同名冲突返回 409)"}
+      }
+    },
+    "TaskCategoryAssignmentRequest": {
+      "type": "object",
+      "required": ["category_id"],
+      "properties": {
+        "category_id": {"type": "integer", "format": "int64", "nullable": true, "description": "目标分类 ID(>0);显式传 null=清除分类(回到未分类)。键必须出现"}
+      }
+    },
+    "TaskCategoryBatchRequest": {
+      "type": "object",
+      "required": ["task_ids", "category_id"],
+      "properties": {
+        "task_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 100, "description": "任务 ID 列表(自动去空白/去重并保序;1-100 个)"},
+        "category_id": {"type": "integer", "format": "int64", "nullable": true, "description": "目标分类 ID(>0);显式传 null=批量清除分类。键必须出现"}
+      }
+    },
+    "TaskCategoryBatchItem": {
+      "type": "object",
+      "required": ["id", "ok"],
+      "properties": {
+        "id": {"type": "string", "description": "请求中的任务 ID(原样回显)"},
+        "ok": {"type": "boolean", "description": "该任务是否成功移入/移出分类"},
+        "error": {"type": "string", "description": "失败原因(bad task id / task not found);成功时字段缺省"}
+      }
+    },
+    "TaskCategoryBatchResult": {
+      "type": "object",
+      "required": ["items", "category"],
+      "properties": {
+        "items": {"type": "array", "items": {"$ref": "#/components/schemas/TaskCategoryBatchItem"}},
+        "category": {"nullable": true, "allOf": [{"$ref": "#/components/schemas/TaskCategory"}], "description": "目标分类;清除分类或无待移动任务时为 null"}
+      }
+    },
+    "TaskTemplate": {
+      "type": "object",
+      "description": "任务模板(新建任务的预设)",
+      "required": ["id", "name", "description", "goal", "category_id", "intercept_rules", "created_at", "updated_at"],
+      "properties": {
+        "id": {"type": "integer", "format": "int64"},
+        "name": {"type": "string", "description": "模板名称(唯一,大小写不敏感)"},
+        "description": {"type": "string", "description": "预设任务描述"},
+        "goal": {"type": "string", "description": "预设任务目标"},
+        "category_id": {"type": "integer", "format": "int64", "nullable": true, "description": "默认分类 ID;null=未指定"},
+        "intercept_rules": {"type": "array", "items": {"$ref": "#/components/schemas/TaskInterceptRule"}, "description": "任务级拦截规则快照(恒为数组,可为空)"},
+        "created_at": {"type": "string", "description": "创建时间(RFC3339)"},
+        "updated_at": {"type": "string", "description": "更新时间(RFC3339)"}
+      }
+    },
+    "TaskTemplateCreateRequest": {
+      "type": "object",
+      "required": ["name", "description", "goal"],
+      "properties": {
+        "name": {"type": "string", "description": "模板名称(空白归一后 1-120 字符;唯一)"},
+        "description": {"type": "string", "description": "预设任务描述(1-16000 字符,不可为空)"},
+        "goal": {"type": "string", "description": "预设任务目标(1-16000 字符,不可为空)"},
+        "category_id": {"type": "integer", "format": "int64", "nullable": true, "description": "默认分类 ID;省略/null=未指定;须存在"},
+        "intercept_rules": {"type": "array", "items": {"$ref": "#/components/schemas/TaskInterceptRule"}, "description": "任务级资产拦截/允许规则"}
+      }
+    },
+    "TaskTemplatePatchRequest": {
+      "type": "object",
+      "description": "模板部分更新:至少提供一个字段。category_id/intercept_rules 以键是否出现判断更新意图(传 null/空数组即清除)",
+      "properties": {
+        "name": {"type": "string", "description": "新名称(空白归一后 1-120 字符;提供时不可为空)"},
+        "description": {"type": "string", "description": "新描述(去空白后 1-16000 字符;提供时不可为空)"},
+        "goal": {"type": "string", "description": "新目标(去空白后 1-16000 字符;提供时不可为空)"},
+        "category_id": {"type": "integer", "format": "int64", "nullable": true, "description": "键出现即更新默认分类;传 null 清除;省略键则保持不变"},
+        "intercept_rules": {"type": "array", "items": {"$ref": "#/components/schemas/TaskInterceptRule"}, "description": "键出现即整体替换规则(传空数组清空);省略键则保持不变"}
+      }
+    },
+    "TaskLLMProfilesUpdateRequest": {
+      "type": "object",
+      "required": ["llm_profile_ids"],
+      "properties": {
+        "llm_profile_ids": {"type": "array", "items": {"type": "integer", "format": "int64"}, "description": "新的有序任务级 LLM 配置链(第一项初始生效);空数组=清除任务链,回落激活/全局配置。id 须存在且已设置 API Key,不可重复"},
+        "active_llm_profile_id": {"type": "integer", "format": "int64", "nullable": true, "description": "链内初始生效的配置 ID;null/0=链首"}
+      }
+    },
+    "TaskLLMProfilesUpdateResult": {
+      "type": "object",
+      "required": ["id", "llm_profile_ids", "active_llm_profile_id", "llm_failover_state", "reopened_intents"],
+      "properties": {
+        "id": {"type": "string", "description": "任务 ID"},
+        "llm_profile_ids": {"type": "array", "items": {"type": "integer", "format": "int64"}, "description": "更新后的配置链"},
+        "active_llm_profile_id": {"type": "integer", "format": "int64", "nullable": true, "description": "当前生效配置 ID;null=链额度耗尽或无链"},
+        "llm_failover_state": {"type": "string", "enum": ["default", "ready", "chain_exhausted"], "description": "链故障转移状态"},
+        "reopened_intents": {"type": "integer", "format": "int64", "description": "因 LLM 额度耗尽 blocked 而被顺带重开的意图数;终态任务恒为 0"},
+        "switch_event": {"$ref": "#/components/schemas/TaskLLMSwitchEvent"}
+      }
+    },
+    "TaskLLMSwitchEvent": {
+      "type": "object",
+      "description": "用户手动切换任务 LLM 时写入的活动审计事件(仅活跃配置发生变化时随响应返回)",
+      "required": ["seq", "worker", "ts", "kind", "is_error", "summary"],
+      "properties": {
+        "seq": {"type": "integer", "format": "int64", "description": "活动流水 ID"},
+        "intent_id": {"type": "string", "description": "关联意图节点 ID;无关联时字段缺省"},
+        "worker": {"type": "string", "description": "产出者;手动切换事件为 system"},
+        "ts": {"type": "string", "description": "时间(RFC3339)"},
+        "kind": {"type": "string", "description": "活动类型;手动切换事件为 llm_switch"},
+        "tool": {"type": "string", "description": "工具名;无则字段缺省"},
+        "tool_use_id": {"type": "string", "description": "工具调用 ID;无则字段缺省"},
+        "is_error": {"type": "boolean"},
+        "summary": {"type": "string", "description": "摘要(如:用户手动将任务 LLM 从 X 切换到 Y)"},
+        "detail": {"type": "string", "description": "详情;字段缺省时为空"},
+        "metadata": {"type": "object", "nullable": true, "additionalProperties": true, "description": "结构化元数据(切换前后的配置档案等)"},
+        "source_task_id": {"type": "string", "description": "来源任务 ID(继承活动);字段缺省时为无"},
+        "inherited": {"type": "boolean", "description": "是否继承自来源任务"},
+        "main_seg": {"type": "integer", "nullable": true, "description": "主 Agent 会话分段号;非主 Agent 行缺省"}
+      }
+    },
+    "TaskLLMResolution": {
+      "type": "object",
+      "description": "一个角色实际生效的 LLM 解析结果",
+      "required": ["name", "format", "model", "source", "available"],
+      "properties": {
+        "profile_id": {"type": "integer", "format": "int64", "nullable": true, "description": "命中的数据库 LLM 配置 ID;环境变量/无配置时字段缺省"},
+        "name": {"type": "string", "description": "配置名称(环境变量配置时为全局配置或自定义名)"},
+        "format": {"type": "string", "description": "provider 格式(如 openai/anthropic 等)"},
+        "model": {"type": "string", "description": "模型名"},
+        "source": {"type": "string", "enum": ["agent_binding", "task_chain", "global_profile", "environment", "global"], "description": "解析来源:agent_binding=角色 Agent 绑定;task_chain=任务配置链;global_profile=激活的全局配置;environment=环境变量配置;global=无可用配置"},
+        "available": {"type": "boolean", "description": "该配置是否可用(有 API Key 且格式有效)"},
+        "reason": {"type": "string", "description": "不可用时的原因(LLM 配置不存在/未设置 API Key/格式或参数无效/任务链额度已耗尽/没有可用的 LLM 配置);可用时字段缺省"}
+      }
+    },
+    "TaskLLMResolutions": {
+      "type": "object",
+      "description": "任务三个角色的 LLM 解析结果",
+      "required": ["mainagent", "planner", "worker"],
+      "properties": {
+        "mainagent": {"$ref": "#/components/schemas/TaskLLMResolution"},
+        "planner": {"$ref": "#/components/schemas/TaskLLMResolution"},
+        "worker": {"$ref": "#/components/schemas/TaskLLMResolution"}
+      }
+    },
+    "TaskIntentControlRequest": {
+      "type": "object",
+      "required": ["action"],
+      "properties": {
+        "action": {"type": "string", "enum": ["pause", "resume", "cancel"], "description": "pause=暂停运行中的意图;resume=恢复已暂停意图(回 open);cancel=删除意图"},
+        "reason": {"type": "string", "description": "删除原因;action=cancel 时必填(会记入 delete_reason 并告知 planner)"},
+        "mode": {"type": "string", "enum": ["soft", "hard"], "description": "cancel 专用删除模式:soft(默认)=假删除(state=deleted,保留血缘);hard=真删除(级联移除独占子孙)", "default": "soft"}
+      }
+    },
+    "TaskIntentCleanup": {
+      "type": "object",
+      "description": "意图硬删除时级联清理的节点计数",
+      "required": ["intents", "facts", "findings", "activities"],
+      "properties": {
+        "intents": {"type": "integer", "format": "int64", "description": "删除的意图节点数(含级联)"},
+        "facts": {"type": "integer", "format": "int64", "description": "删除的事实节点数"},
+        "findings": {"type": "integer", "format": "int64", "description": "删除的发现节点数"},
+        "activities": {"type": "integer", "format": "int64", "description": "删除的活动记录数"}
+      }
+    },
+    "TaskIntentControlResult": {
+      "type": "object",
+      "description": "意图控制结果",
+      "required": ["id"],
+      "properties": {
+        "id": {"type": "integer", "format": "int64", "description": "意图节点 ID"},
+        "state": {"type": "string", "enum": ["open", "paused", "deleted", ""], "description": "操作后的意图状态:pause→paused;resume→open;cancel(soft)→deleted;cancel(hard)→空字符串(节点已物理删除,前端据 deleted 从列表移除)"},
+        "deleted": {"nullable": true, "allOf": [{"$ref": "#/components/schemas/TaskIntentCleanup"}], "description": "硬删除(hard)时返回的级联清理计数;其他情况字段缺省"}
+      }
+    },
+    "TaskIntentMessageRequest": {
+      "type": "object",
+      "required": ["message", "request_id"],
+      "properties": {
+        "message": {"type": "string", "description": "人工消息(去空白后 1-4000 字符);作为该意图下一轮输入;支持 @引用语法(服务端展开引用记录快照)"},
+        "request_id": {"type": "string", "description": "请求标识,1-128 位字母/数字/-/_/./:;用于幂等与追踪"}
+      }
+    },
+    "TaskIntentMessageResult": {
+      "type": "object",
+      "required": ["id", "state", "accepted", "request_id"],
+      "properties": {
+        "id": {"type": "integer", "format": "int64", "description": "意图节点 ID"},
+        "state": {"type": "string", "description": "恒为 running(消息已注入,意图开始独立执行)"},
+        "accepted": {"type": "boolean", "description": "恒为 true"},
+        "request_id": {"type": "string", "description": "回显请求标识"}
+      }
+    },
+    "TaskIntentRerunResult": {
+      "type": "object",
+      "required": ["id", "reopened", "queued"],
+      "properties": {
+        "id": {"type": "string", "description": "任务 ID"},
+        "reopened": {"type": "integer", "format": "int64", "description": "单条重跑=被重开的意图节点 ID;批量重跑=重开的 blocked 意图条数"},
+        "queued": {"type": "boolean", "description": "任务复活后是否进入并发排队"}
+      }
+    },
+    "TaskCoverage": {
+      "type": "object",
+      "description": "任务资产测试覆盖度(粗估参考值);enabled=false 时其余字段为零值",
+      "required": ["enabled", "scope_rows", "denominator", "tested", "pct", "by_type"],
+      "properties": {
+        "enabled": {"type": "boolean", "description": "资产覆盖度功能是否开启;false 时前端隐藏覆盖度展示"},
+        "scope_rows": {"type": "integer", "description": "任务范围行数;0=范围未锚定"},
+        "denominator": {"type": "integer", "description": "范围内资产数(分母)"},
+        "tested": {"type": "integer", "description": "已测(约)资产数"},
+        "pct": {"type": "number", "format": "double", "nullable": true, "description": "覆盖度百分比(0-100);分母为 0 时为 null"},
+        "by_type": {"type": "array", "items": {"$ref": "#/components/schemas/TaskCoverageByType"}, "description": "按资产类型的总数/已测"}
+      }
+    },
+    "TaskCoverageByType": {
+      "type": "object",
+      "required": ["type", "total", "tested"],
+      "properties": {
+        "type": {"type": "string", "description": "资产类型(root_domain/ip/subdomain/app/service/endpoint 等)"},
+        "total": {"type": "integer", "description": "该类型范围内资产数"},
+        "tested": {"type": "integer", "description": "该类型已测资产数"}
+      }
+    },
+    "TaskCoverageGraphData": {
+      "type": "object",
+      "description": "任务覆盖度力导向图(节点+包含关系边)",
+      "required": ["nodes", "edges"],
+      "properties": {
+        "nodes": {"type": "array", "items": {"$ref": "#/components/schemas/TaskCoverageGraphNode"}},
+        "edges": {"type": "array", "items": {"$ref": "#/components/schemas/TaskCoverageGraphEdge"}}
+      }
+    },
+    "TaskCoverageGraphNode": {
+      "type": "object",
+      "description": "覆盖度图节点:范围内资产节点或仅用于连接的根域名/公司节点(连接节点 in_scope=false,渲染置灰)",
+      "required": ["key", "kind", "label", "tested", "in_scope"],
+      "properties": {
+        "key": {"type": "string", "description": "节点唯一键:资产 a:<assetID>,公司 c:<companyID>"},
+        "kind": {"type": "string", "enum": ["company", "root_domain", "subdomain", "ip", "service", "app", "endpoint"], "description": "节点类型"},
+        "label": {"type": "string", "description": "展示标签"},
+        "tested": {"type": "boolean", "description": "是否已被当前或来源任务的 fact 锚定(已测)"},
+        "in_scope": {"type": "boolean", "description": "是否在任务范围内;仅连接用的根域名/公司节点为 false"},
+        "asset_id": {"type": "integer", "format": "int64", "description": "资产 ID;公司/合成根域名节点为 0(字段缺省)"},
+        "company_id": {"type": "integer", "format": "int64", "description": "公司 ID;无则字段缺省"},
+        "domain": {"type": "string"},
+        "root_domain": {"type": "string"},
+        "ip": {"type": "string"},
+        "url": {"type": "string"},
+        "port": {"type": "integer"},
+        "service_type": {"type": "string"},
+        "app_name": {"type": "string"},
+        "page_title": {"type": "string"},
+        "status_code": {"type": "integer"}
+      }
+    },
+    "TaskCoverageGraphEdge": {
+      "type": "object",
+      "description": "child→parent 包含关系边:引用节点的 key",
+      "required": ["src", "dst"],
+      "properties": {
+        "src": {"type": "string", "description": "子节点 key"},
+        "dst": {"type": "string", "description": "父节点 key"}
+      }
+    }
+  }
+}

@@ -1,0 +1,2472 @@
+{
+  "paths": {
+    "/api/assets": {
+      "get": {
+        "tags": ["assets"],
+        "summary": "资产列表查询",
+        "description": "分页查询统一资产表。过滤方式优先级:dsl 查询表达式 > company_id 企业过滤 > task_id 任务过滤 > type 类型过滤;四者皆空时 type 默认 root_domain。company_id 与 task_id 仅在未提供 dsl 时生效,且 company_id 优先。返回当页条目 count、忽略分页的匹配总数 total 与资产数组;offset 超出总数时返回空页。type 在所有过滤模式下均作为附加类型过滤。",
+        "operationId": "listAssets",
+        "parameters": [
+          {
+            "name": "type",
+            "in": "query",
+            "required": false,
+            "description": "资产类型过滤(root_domain/subdomain/ip/app/service/endpoint)。仅在无 dsl 且无 company_id/task_id 时空值默认 root_domain",
+            "schema": {
+              "type": "string",
+              "enum": ["root_domain", "subdomain", "ip", "app", "service", "endpoint"]
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "每页条数,默认 50;上限 200(超过按 200 截断),<=0 按 50 处理",
+            "schema": {
+              "type": "integer",
+              "default": 50,
+              "maximum": 200
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "description": "偏移量,负数按 0 处理",
+            "schema": {
+              "type": "integer",
+              "default": 0
+            }
+          },
+          {
+            "name": "dsl",
+            "in": "query",
+            "required": false,
+            "description": "资产 DSL 查询表达式,需通过语法校验;提供时优先于 company_id/task_id/type 的组合查询",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "company_id",
+            "in": "query",
+            "required": false,
+            "description": "限定归属某企业的资产 ID(>0 生效,优先于 task_id)",
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "query",
+            "required": false,
+            "description": "限定某任务关联的资产 ID(>0 生效;配合 dsl 时将 DSL 检索范围限定在该任务的资产内)",
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "分页资产列表",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssetListResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "dsl 表达式语法校验失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "数据库查询失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "数据库未连接",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": ["assets"],
+        "summary": "批量登记资产",
+        "description": "按 assets 数组逐条 upsert 资产:按 type 分发到根域名/子域名/IP/应用/服务/端点的写入逻辑(service 类型有 URL 走 HTTP 服务,否则走端口服务;IP 字段为空时 service/endpoint 归属 IP 回退 service_ip)。task_id>0 时同时建立任务-资产关联并标记来源为 api。逐条独立处理:成功项(含分配的 id)进 results,失败或未知类型进 errors,不中断整批,整体仍返回 200。",
+        "operationId": "insertAssets",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssetUpsertRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "逐条处理结果(含成功与失败明细,不代表全部成功)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssetUpsertResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求体不是合法 JSON",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "数据库未连接",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": ["assets"],
+        "summary": "批量删除资产",
+        "description": "按 id 列表删除统一资产表中的资产,返回实际删除条数。ids 不能为空数组。",
+        "operationId": "deleteAssets",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssetDeleteRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "删除结果",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssetDeleteResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "JSON 解析失败或 ids 为空",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "数据库删除失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "数据库未连接",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/assets/counts": {
+      "get": {
+        "tags": ["assets"],
+        "summary": "各类型资产数量统计",
+        "description": "按资产类型分组计数。提供 task_id(>0)时仅统计该任务关联的资产,否则统计全局全部资产。返回 资产类型 → 数量 的映射,无资产的类型不出现在结果中。",
+        "operationId": "getAssetCounts",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "query",
+            "required": false,
+            "description": "限定统计某任务关联的资产(>0 生效)",
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "资产类型到数量的映射",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "integer"
+                  },
+                  "description": "资产类型(root_domain/subdomain/ip/app/service/endpoint)→ 数量"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "数据库查询失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "数据库未连接",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/companies": {
+      "get": {
+        "tags": ["companies"],
+        "summary": "企业列表",
+        "description": "返回全部企业(按名称排序),每家含其范围规则列表与归属资产数量 asset_count。",
+        "operationId": "listCompanies",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "企业列表(含范围与资产计数)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/CompanyWithScope"
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "数据库查询失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "数据库未连接",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": ["companies"],
+        "summary": "新建企业",
+        "description": "创建企业并可选写入初始范围规则,事务内完成企业、有效规则与资产归属推导的原子提交。范围规则兼容新格式 [{kind,value}] 与历史格式纯字符串数组两种条目。无效规则不阻断有效规则入库,通过 scope_invalid 计数与 scope_errors 逐条反馈。名称归一化后冲突返回 409。请求体上限 2MiB(超出返回 413)。",
+        "operationId": "createCompany",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CompanyCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "企业创建成功(含初始范围写入明细)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CompanyCreateResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "JSON 解析失败、name 为空或范围规则校验失败(单条原始值超过 1024 字符等)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "企业名称已存在",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "请求正文过大(超过 2MiB)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "数据库写入失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "数据库未连接",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/companies/reattribute": {
+      "post": {
+        "tags": ["companies"],
+        "summary": "重算资产归属",
+        "description": "依据全部企业的范围规则全量重算每条资产归属哪个企业。企业在删除、范围调整后可手动调用对账;ScopeSentry 同步自动建企业后内部也会调用同一逻辑。",
+        "operationId": "reattributeCompanies",
+        "responses": {
+          "200": {
+            "description": "重算完成",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["ok"],
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "重算失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "数据库未连接",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/companies/{id}": {
+      "get": {
+        "tags": ["companies"],
+        "summary": "企业详情",
+        "description": "返回单个企业基础信息与其全部范围规则(按规则 ID 升序)。",
+        "operationId": "getCompany",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "企业 ID",
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "企业详情与范围规则",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CompanyDetailResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "id 不是合法整数",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "企业不存在",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "数据库查询失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "数据库未连接",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": ["companies"],
+        "summary": "删除企业",
+        "description": "删除企业。请求体可选:空 body 视为 delete_assets=false 仅删除企业并保留资产(解除归属);delete_assets=true 时连同归属资产一并删除。body 非空时必须是单个合法 JSON 对象(含多值 JSON 报 400)。",
+        "operationId": "deleteCompany",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "企业 ID",
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CompanyDeleteRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "删除结果",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CompanyDeleteResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "id 非法或请求体不是单个合法 JSON 对象",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "企业不存在",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "数据库删除失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "数据库未连接",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/companies/{id}/scope": {
+      "post": {
+        "tags": ["companies"],
+        "summary": "追加或替换企业范围",
+        "description": "向企业写入范围规则,写入后全局重算资产归属。默认追加模式(reset=false):与现有规则重复的条目计入 skipped;reset=true 时整体替换现有范围。范围条目兼容 [{kind,value}] 结构化格式与纯字符串历史格式。reason 作为变更备注写入每条规则。无效条目计入 invalid 并在 errors 逐条说明,不阻断有效条目;warnings 为存量脏数据(如格式非法的 IP 资产)提示,不代表本次提交有误。请求体上限 2MiB。",
+        "operationId": "addCompanyScope",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "企业 ID",
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CompanyScopeAddRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "范围写入结果",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CompanyScopeMutationResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "id 非法、JSON 解析失败或范围规则校验失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "企业不存在",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "请求正文过大(超过 2MiB)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "数据库写入失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "数据库未连接",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/workspace/list": {
+      "get": {
+        "tags": ["workspace"],
+        "summary": "工作区目录列表",
+        "description": "列出共享工作目录下指定子目录的条目。path 为工作区相对路径(空或缺省 = 根目录),\"..\" 等路径穿越会被拒绝。结果排序:目录在前,目录与文件各自按名称忽略大小写排序。",
+        "operationId": "listWorkspace",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "required": false,
+            "description": "工作区相对目录路径,默认根目录",
+            "schema": {
+              "type": "string",
+              "default": ""
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "目录条目列表",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceListResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "非法路径(逃逸工作区)或目标不是目录",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "路径不存在",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "读取目录失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/workspace/read": {
+      "get": {
+        "tags": ["workspace"],
+        "summary": "读取工作区文本文件",
+        "description": "内联返回文件内容用于查看/编辑。超过 2MiB 的文件返回 too_large=true 且 binary=true(应改用下载接口);含 NUL 字节或非 UTF-8 编码的二进制文件返回 binary=true,两种情况均不带 content。目录返回 400。",
+        "operationId": "readWorkspaceFile",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "description": "工作区相对文件路径",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "文件内容或二进制/超限标记",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceReadResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "非法路径或目标是目录",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "文件不存在",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "读取文件失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/workspace/write": {
+      "post": {
+        "tags": ["workspace"],
+        "summary": "写入工作区文本文件",
+        "description": "创建或覆盖一个文本文件(UTF-8);父目录不存在时自动递归创建。不能以工作区根目录为目标,目标已存在且为目录时报 400。",
+        "operationId": "writeWorkspaceFile",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkspaceWriteRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "写入成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceWriteResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "JSON 解析失败、非法路径或目标是目录",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "创建目录或写文件失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/workspace/mkdir": {
+      "post": {
+        "tags": ["workspace"],
+        "summary": "创建工作区目录",
+        "description": "递归创建目录(已存在不报错)。不能以工作区根目录本身为目标。",
+        "operationId": "makeWorkspaceDir",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["path"],
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "description": "要创建的工作区相对目录路径"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "创建成功(目录已存在也视为成功)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceWriteResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "JSON 解析失败或非法路径",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "创建目录失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/workspace/delete": {
+      "delete": {
+        "tags": ["workspace"],
+        "summary": "删除工作区文件或目录",
+        "description": "删除一个文件或整棵目录树。路径被限制在工作目录内,根目录本身不可删除。",
+        "operationId": "deleteWorkspacePath",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "description": "要删除的工作区相对路径",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "删除成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["ok"],
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "非法路径或试图删除工作区根目录",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "路径不存在",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "删除失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/workspace/download": {
+      "get": {
+        "tags": ["workspace"],
+        "summary": "下载工作区文件",
+        "description": "以附件形式流式返回文件:设置 Content-Disposition attachment,文件名经清洗并用 RFC 5987 filename* 保留非 ASCII 名称。实际 Content-Type 由 http.ServeFile 按扩展名推断(此处统一标注 application/octet-stream),并支持 Range 请求。目录返回 404。",
+        "operationId": "downloadWorkspaceFile",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "description": "要下载的工作区相对文件路径",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "文件二进制流(附件下载)",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "非法路径",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "文件不存在(含路径为目录的情况)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/workspace/upload": {
+      "post": {
+        "tags": ["workspace"],
+        "summary": "上传文件到工作区",
+        "description": "multipart/form-data 上传,表单字段名为 file(可重复多个),保存到 ?path= 指定的目录(默认根目录,目录不存在报 400)。服务端取每个文件的 basename 剥离路径部分,同名覆盖。单请求体上限 512MiB(超出报 400)。返回成功保存的文件数。",
+        "operationId": "uploadWorkspaceFile",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "required": false,
+            "description": "目标目录的工作区相对路径,默认根目录",
+            "schema": {
+              "type": "string",
+              "default": ""
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": ["file"],
+                "properties": {
+                  "file": {
+                    "type": "array",
+                    "description": "上传的文件,字段名 file,可重复多个",
+                    "items": {
+                      "type": "string",
+                      "format": "binary"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "上传结果",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceUploadResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "非法路径、目标目录不存在、缺少 file 字段或解析上传失败/超出 512MiB 限制",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "保存文件失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/sync/scopesentry/status": {
+      "get": {
+        "tags": ["sync"],
+        "summary": "ScopeSentry 数据源状态",
+        "description": "查看名为 ScopeSentry 的 MCP 数据源行:是否存在、是否完成配置(URL 与 X-API-Key 齐备)、是否启用,以及缓存的 MCP 工具名列表。仅当已配置且启用时做一次 12 秒超时的连通性探测(尝试拉取工具列表)写入 reachable。数据源不存在时仍返回 200,各状态字段为 false。",
+        "operationId": "getScopeSentryStatus",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "数据源状态",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScopeSentryStatus"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "读取 MCP 配置失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "数据库未连接",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/sync/scopesentry/datasource": {
+      "post": {
+        "tags": ["sync"],
+        "summary": "配置 ScopeSentry 数据源",
+        "description": "创建或更新名为 ScopeSentry 的 http 传输 MCP 数据源行:url 与 api_key 均可选,空 body 只创建占位行;仅当 URL 与 API Key 齐备时自动置为启用,并尽力执行一次工具发现以填充状态页的 tools。API Key 以 X-API-Key 请求头形式保存在 env 中。JSON 解析失败会被忽略(按空 body 处理),不会返回 400。",
+        "operationId": "setScopeSentryDatasource",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScopeSentryDatasourceRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "保存结果",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScopeSentryDatasourceResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "保存 MCP 配置失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "数据库未连接",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/sync/scopesentry/projects": {
+      "get": {
+        "tags": ["sync"],
+        "summary": "拉取 ScopeSentry 项目列表",
+        "description": "调用上游 ScopeSentry MCP 的 list_projects_data 工具分页拉取项目,取 result.All 数组与 tag 计数映射原样透传。search 非空时透传给上游做名称搜索。需要数据源已配置并启用,否则返回 502。上游响应解析失败也返回 502。整次调用 60 秒超时。",
+        "operationId": "listScopeSentryProjects",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "description": "页码,默认 1(<=0 回落 1)",
+            "schema": {
+              "type": "integer",
+              "default": 1
+            }
+          },
+          {
+            "name": "size",
+            "in": "query",
+            "required": false,
+            "description": "每页条数,默认 50(<=0 回落 50)",
+            "schema": {
+              "type": "integer",
+              "default": 50
+            }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "required": false,
+            "description": "按名称搜索,透传给上游",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "项目列表与标签计数",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScopeSentryProjectsResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "读取 MCP 配置失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "数据源不存在/未配置/未启用,上游调用失败或响应解析失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "数据库未连接",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/sync/scopesentry/tasks": {
+      "get": {
+        "tags": ["sync"],
+        "summary": "拉取 ScopeSentry 任务列表",
+        "description": "调用上游 ScopeSentry MCP 的 list_tasks 工具分页拉取任务,取 list 数组原样透传(字段结构以上游为准)。search 非空时透传给上游。需要数据源已配置并启用,否则返回 502。整次调用 60 秒超时。",
+        "operationId": "listScopeSentryTasks",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "description": "页码,默认 1(<=0 回落 1)",
+            "schema": {
+              "type": "integer",
+              "default": 1
+            }
+          },
+          {
+            "name": "size",
+            "in": "query",
+            "required": false,
+            "description": "每页条数,默认 50(<=0 回落 50)",
+            "schema": {
+              "type": "integer",
+              "default": 50
+            }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "required": false,
+            "description": "按名称搜索,透传给上游",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "任务列表",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScopeSentryTasksResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "读取 MCP 配置失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "数据源不存在/未配置/未启用,上游调用失败或响应解析失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "数据库未连接",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/sync/scopesentry/sync": {
+      "post": {
+        "tags": ["sync"],
+        "summary": "执行 ScopeSentry 资产同步",
+        "description": "按 project(项目 ObjectID)或 task(任务名)维度拉取资产并映射入库:subdomain(连带其解析 IP 一并入库)、app、service(有 URL 按 HTTP 服务入库,否则按端口服务)。create_company=true 且维度为 project 时,按项目名 upsert 企业、把项目 target 中的根域写入企业范围,并在同步结束后重算资产归属。单目标单类型 5000 条保护上限(超出截断并写入 warnings)。page_size 越界(<=0 或 >500)回落 100。整批同步最长 10 分钟。逐条入库失败写入 errors 不中断整体,响应仍为 200。",
+        "operationId": "syncScopeSentry",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScopeSentrySyncRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "同步结果(含各类型入库计数、创建的企业与告警/错误明细)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScopeSentrySyncResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "JSON 解析失败、dimension 不是 project/task 或 targets 为空",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "数据源不存在/未配置/未启用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "数据库未连接",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "schemas": {
+    "Asset": {
+      "type": "object",
+      "description": "统一资产表中的一条资产。除必填字段外,各类型专属字段仅在对应类型且有值时出现(omitempty)",
+      "required": ["id", "type", "task_ids", "last_seen"],
+      "properties": {
+        "id": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "type": {
+          "type": "string",
+          "description": "资产类型:root_domain/subdomain/ip/app/service/endpoint",
+          "enum": ["root_domain", "subdomain", "ip", "app", "service", "endpoint"]
+        },
+        "company_id": {
+          "type": "integer",
+          "format": "int64",
+          "nullable": true,
+          "description": "归属企业 ID,未归属时不出现"
+        },
+        "task_ids": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "description": "关联的任务 ID 列表"
+        },
+        "domain": {
+          "type": "string"
+        },
+        "root_domain": {
+          "type": "string",
+          "description": "归属的根域名"
+        },
+        "ip": {
+          "type": "string"
+        },
+        "c_segment": {
+          "type": "string",
+          "description": "C 段"
+        },
+        "port": {
+          "type": "integer",
+          "nullable": true,
+          "description": "端口(服务/端点类资产)"
+        },
+        "icp": {
+          "type": "string",
+          "description": "ICP 备案号"
+        },
+        "bound_domains": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "IP 绑定的域名(ip 类型)"
+        },
+        "open_ports": {
+          "type": "array",
+          "items": {
+            "$ref": "#/components/schemas/AssetOpenPort"
+          },
+          "description": "开放端口列表(ip 类型)"
+        },
+        "record_type": {
+          "type": "string",
+          "description": "DNS 记录类型(subdomain)"
+        },
+        "record_value": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "DNS 记录值(subdomain)"
+        },
+        "bundle_id": {
+          "type": "string",
+          "description": "应用包名(app)"
+        },
+        "app_name": {
+          "type": "string",
+          "description": "应用名(app)"
+        },
+        "category": {
+          "type": "string",
+          "description": "应用分类(app)"
+        },
+        "app_description": {
+          "type": "string",
+          "description": "应用描述(app)"
+        },
+        "app_icp": {
+          "type": "string",
+          "description": "应用 ICP 备案号(app)"
+        },
+        "url": {
+          "type": "string",
+          "description": "URL(service/endpoint)"
+        },
+        "service_type": {
+          "type": "string",
+          "description": "服务类型(http/其他)"
+        },
+        "service_name": {
+          "type": "string",
+          "description": "服务名(非 HTTP 服务)"
+        },
+        "favicon_mmh3": {
+          "type": "string",
+          "description": "favicon 的 mmh3 哈希(HTTP 服务)"
+        },
+        "status_code": {
+          "type": "integer",
+          "nullable": true,
+          "description": "HTTP 状态码"
+        },
+        "content_length": {
+          "type": "integer",
+          "format": "int64",
+          "nullable": true,
+          "description": "响应体大小(字节)"
+        },
+        "page_title": {
+          "type": "string",
+          "description": "页面标题(HTTP 服务)"
+        },
+        "technologies": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "识别到的技术栈(HTTP 服务)"
+        },
+        "auth": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "description": "认证信息条目(如 type/username/password/token/description)"
+        },
+        "method": {
+          "type": "string",
+          "description": "HTTP 方法(endpoint)"
+        },
+        "params": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "description": "接口参数(endpoint)"
+        },
+        "extra": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "扩展元数据"
+        },
+        "last_seen": {
+          "type": "string",
+          "description": "最近发现时间"
+        },
+        "task_source": {
+          "type": "string",
+          "description": "本任务内的资产来源(api/scopesentry 等)"
+        },
+        "task_source_summary": {
+          "type": "string",
+          "description": "来源摘要说明"
+        },
+        "task_source_node_id": {
+          "type": "integer",
+          "format": "int64",
+          "nullable": true,
+          "description": "来源节点 ID"
+        }
+      }
+    },
+    "AssetOpenPort": {
+      "type": "object",
+      "description": "IP 资产开放端口条目",
+      "required": ["port"],
+      "properties": {
+        "port": {
+          "type": "integer"
+        },
+        "service": {
+          "type": "string",
+          "description": "端口对应服务名(如 ssh/http)"
+        }
+      }
+    },
+    "AssetListResponse": {
+      "type": "object",
+      "description": "资产分页列表响应",
+      "required": ["count", "total", "assets"],
+      "properties": {
+        "count": {
+          "type": "integer",
+          "description": "本页条数"
+        },
+        "total": {
+          "type": "integer",
+          "description": "匹配总数(忽略 limit/offset)"
+        },
+        "assets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/components/schemas/Asset"
+          }
+        }
+      }
+    },
+    "AssetUpsertRequest": {
+      "type": "object",
+      "description": "批量登记资产请求",
+      "required": ["assets"],
+      "properties": {
+        "task_id": {
+          "type": "integer",
+          "format": "int64",
+          "description": "关联任务 ID(>0 时建立任务-资产关联,来源标记为 api)"
+        },
+        "assets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/components/schemas/AssetUpsertInput"
+          }
+        }
+      }
+    },
+    "AssetUpsertInput": {
+      "type": "object",
+      "description": "单条登记资产条目;除 type 外字段按资产类型选填,未用到的字段忽略",
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "description": "资产类型,决定入库逻辑;其他值整条进 errors",
+          "enum": ["root_domain", "subdomain", "ip", "app", "service", "endpoint"]
+        },
+        "domain": {
+          "type": "string",
+          "description": "域名(root_domain/subdomain,以及非 HTTP service)"
+        },
+        "icp": {
+          "type": "string",
+          "description": "ICP 备案号(root_domain/subdomain)"
+        },
+        "record_type": {
+          "type": "string",
+          "description": "DNS 记录类型(subdomain)"
+        },
+        "record_value": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "DNS 记录值(subdomain)"
+        },
+        "ip": {
+          "type": "string",
+          "description": "IP(ip/service/endpoint)"
+        },
+        "bound_domains": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "IP 绑定的域名(ip)"
+        },
+        "open_ports": {
+          "type": "array",
+          "items": {
+            "$ref": "#/components/schemas/AssetOpenPort"
+          },
+          "description": "开放端口(ip)"
+        },
+        "app_name": {
+          "type": "string",
+          "description": "应用名(app)"
+        },
+        "bundle_id": {
+          "type": "string",
+          "description": "应用包名(app)"
+        },
+        "category": {
+          "type": "string",
+          "description": "应用分类(app)"
+        },
+        "description": {
+          "type": "string",
+          "description": "应用描述(app)"
+        },
+        "app_icp": {
+          "type": "string",
+          "description": "应用 ICP 备案号(app)"
+        },
+        "url": {
+          "type": "string",
+          "description": "URL(service 的 HTTP 分支/endpoint)"
+        },
+        "technologies": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "技术栈(HTTP service)"
+        },
+        "status_code": {
+          "type": "integer",
+          "nullable": true,
+          "description": "HTTP 状态码(HTTP service)"
+        },
+        "content_length": {
+          "type": "integer",
+          "format": "int64",
+          "nullable": true,
+          "description": "响应体大小(HTTP service)"
+        },
+        "page_title": {
+          "type": "string",
+          "description": "页面标题(HTTP service)"
+        },
+        "favicon_mmh3": {
+          "type": "string",
+          "description": "favicon mmh3 哈希(HTTP service)"
+        },
+        "auth": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "description": "认证信息条目(service,任意键值)"
+        },
+        "service_ip": {
+          "type": "string",
+          "description": "服务归属 IP,为空时回退 ip 字段(service/endpoint)"
+        },
+        "port": {
+          "type": "integer",
+          "description": "端口(service 的非 HTTP 分支)"
+        },
+        "service_name": {
+          "type": "string",
+          "description": "服务名(service 的非 HTTP 分支)"
+        },
+        "method": {
+          "type": "string",
+          "description": "HTTP 方法(endpoint)"
+        },
+        "params": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "description": "接口参数(endpoint)"
+        }
+      }
+    },
+    "AssetUpsertResponse": {
+      "type": "object",
+      "description": "批量登记资产的处理结果",
+      "required": ["results", "errors"],
+      "properties": {
+        "results": {
+          "type": "array",
+          "items": {
+            "$ref": "#/components/schemas/AssetUpsertResult"
+          }
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/components/schemas/AssetUpsertError"
+          }
+        }
+      }
+    },
+    "AssetUpsertResult": {
+      "type": "object",
+      "description": "单条成功入库结果",
+      "required": ["index", "id", "type"],
+      "properties": {
+        "index": {
+          "type": "integer",
+          "description": "请求 assets 数组中的下标"
+        },
+        "id": {
+          "type": "integer",
+          "format": "int64",
+          "description": "分配/命中的资产 ID"
+        },
+        "type": {
+          "type": "string",
+          "description": "资产类型"
+        }
+      }
+    },
+    "AssetUpsertError": {
+      "type": "object",
+      "description": "单条失败明细",
+      "required": ["index", "error"],
+      "properties": {
+        "index": {
+          "type": "integer",
+          "description": "请求 assets 数组中的下标"
+        },
+        "error": {
+          "type": "string",
+          "description": "失败原因(未知类型或入库错误)"
+        }
+      }
+    },
+    "AssetDeleteRequest": {
+      "type": "object",
+      "description": "批量删除资产请求",
+      "required": ["ids"],
+      "properties": {
+        "ids": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "description": "待删除的资产 ID 列表,不能为空"
+        }
+      }
+    },
+    "AssetDeleteResponse": {
+      "type": "object",
+      "description": "批量删除资产结果",
+      "required": ["deleted"],
+      "properties": {
+        "deleted": {
+          "type": "integer",
+          "description": "实际删除条数"
+        }
+      }
+    },
+    "Company": {
+      "type": "object",
+      "description": "企业主体",
+      "required": ["id", "name", "nkey", "created_at", "updated_at"],
+      "properties": {
+        "id": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "name": {
+          "type": "string"
+        },
+        "nkey": {
+          "type": "string",
+          "description": "归一化名称(小写+折叠空白),唯一键"
+        },
+        "logo": {
+          "type": "string",
+          "nullable": true,
+          "description": "Logo URL,可为空"
+        },
+        "created_at": {
+          "type": "string",
+          "description": "创建时间"
+        },
+        "updated_at": {
+          "type": "string",
+          "description": "更新时间"
+        }
+      }
+    },
+    "CompanyWithScope": {
+      "description": "企业(含范围规则与归属资产数量)",
+      "allOf": [
+        {
+          "$ref": "#/components/schemas/Company"
+        },
+        {
+          "type": "object",
+          "required": ["scope", "asset_count"],
+          "properties": {
+            "scope": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/CompanyScopeRule"
+              }
+            },
+            "asset_count": {
+              "type": "integer",
+              "description": "归属该企业的资产数量"
+            }
+          }
+        }
+      ]
+    },
+    "CompanyScopeRule": {
+      "type": "object",
+      "description": "一条已入库的企业范围规则",
+      "required": ["id", "company_id", "kind", "raw"],
+      "properties": {
+        "id": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "company_id": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "kind": {
+          "type": "string",
+          "description": "规则类型",
+          "enum": ["domain", "ip", "cidr", "icp", "keyword"]
+        },
+        "domain": {
+          "type": "string",
+          "description": "kind=domain 时的归一化根域名"
+        },
+        "net": {
+          "type": "string",
+          "description": "kind=ip/cidr 时的归一化 CIDR(单 IP 为 /32 或 /128)"
+        },
+        "value": {
+          "type": "string",
+          "description": "kind=icp/keyword 时的归一化文本"
+        },
+        "raw": {
+          "type": "string",
+          "description": "原始输入值"
+        },
+        "reason": {
+          "type": "string",
+          "description": "变更备注"
+        }
+      }
+    },
+    "CompanyScopeInput": {
+      "type": "object",
+      "description": "结构化范围规则输入;亦可用纯字符串条目(等价于 kind 留空自动识别)",
+      "required": ["value"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "description": "规则类型 domain/ip/cidr/icp/keyword;留空时按 value 自动识别",
+          "enum": ["domain", "ip", "cidr", "icp", "keyword"]
+        },
+        "value": {
+          "type": "string",
+          "description": "规则原始值(域名/IP/CIDR/ICP 号/关键词),单条最长 1024 字符"
+        }
+      }
+    },
+    "CompanyCreateRequest": {
+      "type": "object",
+      "description": "新建企业请求",
+      "required": ["name"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "企业名称(去除首尾空白后不能为空)"
+        },
+        "logo": {
+          "type": "string",
+          "description": "Logo URL,可选"
+        },
+        "scope": {
+          "type": "array",
+          "description": "初始范围规则,可选;条目兼容 {kind,value} 与纯字符串两种格式",
+          "items": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "$ref": "#/components/schemas/CompanyScopeInput"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "CompanyCreateResponse": {
+      "type": "object",
+      "description": "新建企业结果",
+      "required": ["id", "created", "scope_added", "scope_skipped", "scope_invalid"],
+      "properties": {
+        "id": {
+          "type": "integer",
+          "format": "int64",
+          "description": "新企业 ID"
+        },
+        "created": {
+          "type": "boolean",
+          "description": "是否新建了企业行"
+        },
+        "scope_added": {
+          "type": "integer",
+          "description": "成功写入的初始规则数"
+        },
+        "scope_skipped": {
+          "type": "integer",
+          "description": "重复被跳过的条数"
+        },
+        "scope_invalid": {
+          "type": "integer",
+          "description": "无效条目数"
+        },
+        "scope_errors": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "逐条无效规则说明,仅有错误时出现"
+        }
+      }
+    },
+    "CompanyDetailResponse": {
+      "type": "object",
+      "description": "企业详情响应",
+      "required": ["company", "scope"],
+      "properties": {
+        "company": {
+          "$ref": "#/components/schemas/Company"
+        },
+        "scope": {
+          "type": "array",
+          "items": {
+            "$ref": "#/components/schemas/CompanyScopeRule"
+          }
+        }
+      }
+    },
+    "CompanyDeleteRequest": {
+      "type": "object",
+      "description": "删除企业请求(空 body 等价于全 false)",
+      "properties": {
+        "delete_assets": {
+          "type": "boolean",
+          "default": false,
+          "description": "true 时连同归属资产一并删除;false 仅删除企业并解除资产归属"
+        }
+      }
+    },
+    "CompanyDeleteResponse": {
+      "type": "object",
+      "description": "删除企业结果",
+      "required": ["deleted", "assets_deleted"],
+      "properties": {
+        "deleted": {
+          "type": "integer",
+          "description": "删除的企业数,固定为 1"
+        },
+        "assets_deleted": {
+          "type": "integer",
+          "description": "连带删除的资产数(delete_assets=false 时为 0)"
+        }
+      }
+    },
+    "CompanyScopeAddRequest": {
+      "type": "object",
+      "description": "追加/替换企业范围请求",
+      "required": ["scope"],
+      "properties": {
+        "scope": {
+          "type": "array",
+          "description": "范围规则条目;兼容 {kind,value} 与纯字符串两种格式",
+          "items": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "$ref": "#/components/schemas/CompanyScopeInput"
+              }
+            ]
+          }
+        },
+        "reason": {
+          "type": "string",
+          "description": "变更备注,写入每条规则的 reason"
+        },
+        "reset": {
+          "type": "boolean",
+          "default": false,
+          "description": "true 时替换现有全部范围;默认追加"
+        }
+      }
+    },
+    "CompanyScopeMutationResponse": {
+      "type": "object",
+      "description": "范围写入结果",
+      "required": ["added", "skipped", "invalid"],
+      "properties": {
+        "added": {
+          "type": "integer",
+          "description": "新写入的规则数"
+        },
+        "skipped": {
+          "type": "integer",
+          "description": "与现有规则重复被跳过的条数(追加模式)"
+        },
+        "invalid": {
+          "type": "integer",
+          "description": "无效条目数"
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "逐条无效/失败说明,仅有错误时出现"
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "存量脏数据警告(如格式非法的 IP 资产),仅有告警时出现"
+        }
+      }
+    },
+    "WorkspaceEntry": {
+      "type": "object",
+      "description": "工作区目录条目",
+      "required": ["name", "path", "dir", "size", "mtime"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "文件或目录名"
+        },
+        "path": {
+          "type": "string",
+          "description": "工作区相对路径(正斜杠分隔)"
+        },
+        "dir": {
+          "type": "boolean",
+          "description": "是否为目录"
+        },
+        "size": {
+          "type": "integer",
+          "format": "int64",
+          "description": "字节数(目录为目录项大小)"
+        },
+        "mtime": {
+          "type": "integer",
+          "format": "int64",
+          "description": "修改时间(Unix 毫秒)"
+        }
+      }
+    },
+    "WorkspaceListResponse": {
+      "type": "object",
+      "description": "工作区目录列表响应",
+      "required": ["path", "entries"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "本次列出的工作区相对路径(根目录为空串)"
+        },
+        "entries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/components/schemas/WorkspaceEntry"
+          },
+          "description": "目录在前,各自按名称忽略大小写排序"
+        }
+      }
+    },
+    "WorkspaceReadResponse": {
+      "type": "object",
+      "description": "工作区文件读取响应:文本文件带 content;二进制或超过 2MiB 的文件 binary=true 不带内容",
+      "required": ["path", "size", "binary"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "工作区相对路径"
+        },
+        "size": {
+          "type": "integer",
+          "format": "int64",
+          "description": "文件字节数"
+        },
+        "binary": {
+          "type": "boolean",
+          "description": "true 表示无内联内容(二进制或超限)"
+        },
+        "content": {
+          "type": "string",
+          "description": "UTF-8 文本内容,仅 binary=false 时出现"
+        },
+        "too_large": {
+          "type": "boolean",
+          "description": "超过 2MiB 读取上限时为 true,应改用下载接口"
+        }
+      }
+    },
+    "WorkspaceWriteRequest": {
+      "type": "object",
+      "description": "写入工作区文件请求",
+      "required": ["path"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "目标文件的工作区相对路径(不能是根目录)"
+        },
+        "content": {
+          "type": "string",
+          "description": "写入的文本内容,缺省为空串(清空/创建空文件)"
+        }
+      }
+    },
+    "WorkspaceWriteResponse": {
+      "type": "object",
+      "description": "写入/建目录成功响应",
+      "required": ["ok", "path"],
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        },
+        "path": {
+          "type": "string",
+          "description": "落盘后的工作区相对路径"
+        }
+      }
+    },
+    "WorkspaceUploadResponse": {
+      "type": "object",
+      "description": "上传结果",
+      "required": ["uploaded"],
+      "properties": {
+        "uploaded": {
+          "type": "integer",
+          "description": "成功保存的文件数"
+        }
+      }
+    },
+    "ScopeSentryStatus": {
+      "type": "object",
+      "description": "ScopeSentry 数据源状态",
+      "required": ["exists", "configured", "enabled", "reachable", "tools"],
+      "properties": {
+        "exists": {
+          "type": "boolean",
+          "description": "名为 ScopeSentry 的 MCP 数据源行是否存在"
+        },
+        "configured": {
+          "type": "boolean",
+          "description": "URL 与 API Key 是否齐备"
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "数据源是否启用"
+        },
+        "reachable": {
+          "type": "boolean",
+          "description": "连通性探测结果;未配置或未启用时恒为 false"
+        },
+        "url": {
+          "type": "string",
+          "description": "数据源 URL,仅行存在时返回"
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "缓存的 MCP 工具名列表"
+        }
+      }
+    },
+    "ScopeSentryDatasourceRequest": {
+      "type": "object",
+      "description": "配置 ScopeSentry 数据源请求;两个字段均可选,空 body 只创建占位行",
+      "properties": {
+        "url": {
+          "type": "string",
+          "description": "ScopeSentry MCP 服务地址(http 传输)"
+        },
+        "api_key": {
+          "type": "string",
+          "description": "X-API-Key 认证密钥,保存于 MCP env"
+        }
+      }
+    },
+    "ScopeSentryDatasourceResponse": {
+      "type": "object",
+      "description": "数据源保存结果",
+      "required": ["id", "enabled"],
+      "properties": {
+        "id": {
+          "type": "integer",
+          "format": "int64",
+          "description": "MCP 数据源行 ID"
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "是否已启用(URL 与 API Key 齐备时为 true)"
+        }
+      }
+    },
+    "ScopeSentryProject": {
+      "type": "object",
+      "description": "ScopeSentry 上游项目对象(原样透传,字段以上游为准)",
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "项目 ObjectID"
+        },
+        "name": {
+          "type": "string"
+        },
+        "logo": {
+          "type": "string"
+        },
+        "AssetCount": {
+          "type": "integer",
+          "description": "项目资产数量"
+        },
+        "tag": {
+          "type": "string",
+          "description": "项目标签"
+        }
+      }
+    },
+    "ScopeSentryProjectsResponse": {
+      "type": "object",
+      "description": "ScopeSentry 项目列表响应",
+      "required": ["projects", "tag"],
+      "properties": {
+        "projects": {
+          "type": "array",
+          "items": {
+            "$ref": "#/components/schemas/ScopeSentryProject"
+          }
+        },
+        "tag": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "description": "按标签的项目计数映射"
+        }
+      }
+    },
+    "ScopeSentryTasksResponse": {
+      "type": "object",
+      "description": "ScopeSentry 任务列表响应",
+      "required": ["tasks"],
+      "properties": {
+        "tasks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "description": "上游 list_tasks 原样透传的任务对象数组,字段结构以上游为准"
+        }
+      }
+    },
+    "ScopeSentrySyncRequest": {
+      "type": "object",
+      "description": "ScopeSentry 资产同步请求",
+      "required": ["dimension", "targets"],
+      "properties": {
+        "dimension": {
+          "type": "string",
+          "description": "同步维度",
+          "enum": ["project", "task"]
+        },
+        "targets": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "同步目标:project 维度为项目 ObjectID,task 维度为任务名"
+        },
+        "asset_types": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["subdomain", "service", "app"]
+          },
+          "description": "要同步的资产类型;为空时默认 [subdomain, service, app]"
+        },
+        "create_company": {
+          "type": "boolean",
+          "default": false,
+          "description": "project 维度下按项目名 upsert 企业并把项目 target 根域写入范围,同步后重算资产归属"
+        },
+        "page_size": {
+          "type": "integer",
+          "description": "上游分页大小,默认 100,有效范围 1-500(越界回落 100)"
+        }
+      }
+    },
+    "ScopeSentrySyncResponse": {
+      "type": "object",
+      "description": "ScopeSentry 同步结果",
+      "required": ["synced", "companies", "warnings", "errors"],
+      "properties": {
+        "synced": {
+          "type": "object",
+          "description": "各类型入库成功条数",
+          "required": ["subdomain", "app", "service", "ip"],
+          "properties": {
+            "subdomain": {
+              "type": "integer"
+            },
+            "app": {
+              "type": "integer"
+            },
+            "service": {
+              "type": "integer"
+            },
+            "ip": {
+              "type": "integer"
+            }
+          }
+        },
+        "companies": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "本次创建/更新的企业名列表"
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "非致命提示(项目详情获取失败、达到 5000 条截断等)"
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "逐条入库失败信息"
+        }
+      }
+    }
+  }
+}

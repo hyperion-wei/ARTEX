@@ -24,8 +24,14 @@ web/next-env.d.ts
 *.swp
 *.swo
 
-# docs
-/docs/
+# docs（本地文档默认不提交；接口文档产物例外）
+/docs/*
+!/docs/api-merge.mjs
+!/docs/expected-routes.txt
+!/docs/openapi.json
+!/docs/swagger.html
+!/docs/api-frag/
+!/docs/swagger-ui/
 
 # os
 .DS_Store

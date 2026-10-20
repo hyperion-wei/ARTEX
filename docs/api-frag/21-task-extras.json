@@ -1,0 +1,2079 @@
+{
+  "paths": {
+    "/api/task-archives": {
+      "get": {
+        "tags": ["task-archives"],
+        "summary": "分页列出任务归档",
+        "description": "分页查询冷存档任务列表,支持关键词与状态过滤。q 对 task_id(文本形式)、task_name、task_description 做 ILIKE 模糊匹配;state 精确匹配归档状态。page<1 时回退为 1;size<=0 或 >100 时回退为 20。按归档完成时间(archived_at,缺失用 requested_at)倒序。返回的归档记录不含敏感配置(归档时刻意剔除 LLM profile 配置与 API key)。",
+        "operationId": "listTaskArchives",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "description": "页码,从 1 开始;非法值(<1)回退为 1",
+            "schema": { "type": "integer", "default": 1, "minimum": 1 }
+          },
+          {
+            "name": "size",
+            "in": "query",
+            "required": false,
+            "description": "每页条数;<=0 或 >100 时回退为 20",
+            "schema": { "type": "integer", "default": 20, "minimum": 1, "maximum": 100 }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "description": "关键词,匹配任务 id(文本)、任务名称、任务描述",
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "description": "按归档状态精确过滤",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "archive_queued",
+                "archiving",
+                "archive_failed",
+                "ready",
+                "restore_queued",
+                "restoring",
+                "restore_failed",
+                "delete_queued",
+                "deleting",
+                "delete_failed"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "归档分页结果",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/TaskArchivePage" }
+              }
+            }
+          },
+          "500": {
+            "description": "数据库查询失败",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/task-archives/{id}": {
+      "get": {
+        "tags": ["task-archives"],
+        "summary": "查询单个归档详情",
+        "description": "按归档 id 查询冷存档记录,含 state/phase/progress 处理进度、data_counts(各表数据量)与 aggregate_stats(聚合统计)。主要用于轮询异步归档/恢复/删除接口的执行进度。",
+        "operationId": "getTaskArchive",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "归档 id(task_archives 表主键,非任务 id)",
+            "schema": { "type": "integer", "format": "int64" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "归档记录",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/TaskArchive" }
+              }
+            }
+          },
+          "400": {
+            "description": "归档 id 无效(非整数)",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "404": {
+            "description": "归档不存在",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "500": {
+            "description": "数据库查询失败",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": ["task-archives"],
+        "summary": "入队删除归档",
+        "description": "异步操作:把归档加入删除队列并立即返回 202 与归档记录(state=delete_queued)。后台单一 worker 按请求时间 FIFO 逐条处理(每 2 秒轮询,入队时立即唤醒),先暂存归档包再删除元数据。前置条件:归档 state 必须为 ready 或 delete_failed;若被其他归档依赖(出现在其他归档的 source_task_ids 中且对方未在删除)则返回 409。删除不可恢复。失败(state=delete_failed)可通过再次调用本接口重试;进度用 GET /api/task-archives/{id} 轮询。",
+        "operationId": "queueTaskArchiveDelete",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "归档 id",
+            "schema": { "type": "integer", "format": "int64" }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "已入队删除,返回更新后的归档记录",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/TaskArchive" }
+              }
+            }
+          },
+          "400": {
+            "description": "归档 id 无效",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "409": {
+            "description": "状态不允许删除(state 非 ready/delete_failed,含归档不存在)或被其他归档依赖",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "500": {
+            "description": "数据库错误",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/{id}/archive": {
+      "post": {
+        "tags": ["task-archives"],
+        "summary": "入队归档任务",
+        "description": "异步操作:把任务加入归档队列并立即返回 202 与新建的归档记录(state=archive_queued)。后台单一 worker 按请求时间 FIFO 逐条处理(每 2 秒轮询,入队时立即唤醒):先静默任务(取消聊天/子问题、等待运行中 Agent 退出),再快照 PostgreSQL(含 llm_records 流式导出)、导出独占流量主机、复制证据快照,打包为 tar+zstd 归档包并压缩数据库;完成后任务转为冷存档、从任务列表消失。前置条件:任务必须已暂停或处于终态;排队中(queued)的任务需先暂停;被活跃任务继承(作为 source task)的任务不能归档(409)。失败(state=archive_failed)可通过再次调用本接口重试;进度用 GET /api/tasks/{id}(archive 视图)或 GET /api/task-archives/{id} 轮询 state/phase/progress。",
+        "operationId": "queueTaskArchive",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "任务 id(正整数)",
+            "schema": { "type": "integer", "format": "int64", "minimum": 1 }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "已入队归档,返回归档记录",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/TaskArchive" }
+              }
+            }
+          },
+          "400": {
+            "description": "任务 id 无效",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "404": {
+            "description": "任务不存在",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "409": {
+            "description": "状态冲突:任务未暂停且非终态、排队中任务未暂停、被活跃任务继承、或已有归档记录处于不可重试状态",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "500": {
+            "description": "数据库错误",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/archive/batch": {
+      "post": {
+        "tags": ["task-archives"],
+        "summary": "批量入队归档任务",
+        "description": "异步操作:把多个任务加入归档队列,立即返回 202 与逐条结果(items)。同一请求内按继承关系拓扑排序(依赖方先于来源任务入队,保证 worker 先压缩依赖方);无效的 id 直接以 ok=false 记录在结果里。单次最多 100 个任务,task_ids 不能为空。归档语义与单个接口一致(必须暂停/终态、未被活跃任务继承),单个失败不影响其余条目。",
+        "operationId": "batchQueueTaskArchives",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["task_ids"],
+                "properties": {
+                  "task_ids": {
+                    "type": "array",
+                    "description": "要归档的任务 id 列表(数字字符串),1-100 个",
+                    "items": { "type": "string" },
+                    "minItems": 1,
+                    "maxItems": 100
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "已受理,逐条返回入队结果(单条失败不影响其他条目)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["items"],
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/ArchiveBatchItem" }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "JSON 无效、task_ids 为空或超过 100 个",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/task-archives/{id}/restore": {
+      "post": {
+        "tags": ["task-archives"],
+        "summary": "入队恢复归档",
+        "description": "异步操作:把归档加入恢复队列并立即返回 202 与归档记录(state=restore_queued)。后台 worker 校验并解包归档包(sha256 校验),还原数据库(含流式 llm_records)、任务文件、流量与证据快照,恢复为活跃任务并按归档时的生命周期状态(暂停/终态)重启引擎;完成后归档记录被删除。前置条件:归档 state 必须为 ready 或 restore_failed;归档不存在或状态不符均返回 409(state does not allow this operation)。失败可通过再次调用本接口重试;进度用 GET /api/task-archives/{id} 轮询(恢复完成后该记录消失,任务重新出现在任务列表)。",
+        "operationId": "queueTaskArchiveRestore",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "归档 id",
+            "schema": { "type": "integer", "format": "int64" }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "已入队恢复,返回更新后的归档记录",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/TaskArchive" }
+              }
+            }
+          },
+          "400": {
+            "description": "归档 id 无效",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "409": {
+            "description": "状态不允许恢复(state 非 ready/restore_failed,含归档不存在)",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "500": {
+            "description": "数据库错误",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/task-archives/restore/batch": {
+      "post": {
+        "tags": ["task-archives"],
+        "summary": "批量入队恢复归档",
+        "description": "异步操作:把多个归档加入恢复队列,立即返回 202 与逐条结果(items)。同一请求内按拓扑排序(来源任务先于依赖方恢复)。archive_ids 需为正整数、去重、1-100 个;存在重复时按去重后处理。单个条目状态不符不影响其余条目,失败信息写入对应 item.error。",
+        "operationId": "batchRestoreTaskArchives",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["archive_ids"],
+                "properties": {
+                  "archive_ids": {
+                    "type": "array",
+                    "description": "要恢复的归档 id 列表,1-100 个正整数,自动去重",
+                    "items": { "type": "integer", "format": "int64", "minimum": 1 },
+                    "minItems": 1,
+                    "maxItems": 100,
+                    "uniqueItems": true
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "已受理,逐条返回入队结果",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["items"],
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/ArchiveBatchItem" }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "JSON 无效、archive_ids 为空、含非正整数或超过 100 个",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/task-archives/delete/batch": {
+      "post": {
+        "tags": ["task-archives"],
+        "summary": "批量入队删除归档",
+        "description": "异步操作:把多个归档加入删除队列,立即返回 202 与逐条结果(items)。同一请求内按拓扑排序(依赖方先于来源任务删除)。archive_ids 需为正整数、去重、1-100 个。删除不可恢复;被其他归档依赖的条目返回 ok=false 与错误信息,不影响其余条目。",
+        "operationId": "batchDeleteTaskArchives",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["archive_ids"],
+                "properties": {
+                  "archive_ids": {
+                    "type": "array",
+                    "description": "要删除的归档 id 列表,1-100 个正整数,自动去重",
+                    "items": { "type": "integer", "format": "int64", "minimum": 1 },
+                    "minItems": 1,
+                    "maxItems": 100,
+                    "uniqueItems": true
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "已受理,逐条返回入队结果",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["items"],
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/ArchiveBatchItem" }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "JSON 无效、archive_ids 为空、含非正整数或超过 100 个",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/{id}/goals": {
+      "get": {
+        "tags": ["goals"],
+        "summary": "列出任务目标",
+        "description": "返回本任务全部 goal 节点(payload 已拆为 text/vulnclass),供总览「目标管理」卡片渲染。上限 10000 条。",
+        "operationId": "listTaskGoals",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "任务 id",
+            "schema": { "type": "integer", "format": "int64" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "目标列表",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GoalList" }
+              }
+            }
+          },
+          "404": {
+            "description": "任务不存在",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "500": {
+            "description": "数据库错误",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": ["goals"],
+        "summary": "人工新增目标",
+        "description": "在任务根下写入一个 goal 节点(origin=human),记录「人新增了目标」触发唤醒 planner,并复活任务:终态(done/failed/timeout)拉回 running、解除暂停、必要时进入并发队列,让规划者据新目标重新评估是否达成。text 去除首尾空白后不能为空。",
+        "operationId": "createTaskGoal",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "任务 id",
+            "schema": { "type": "integer", "format": "int64" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/GoalInput" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "新建的目标",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Goal" }
+              }
+            }
+          },
+          "400": {
+            "description": "JSON 无效或目标内容为空",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "404": {
+            "description": "任务不存在",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "409": {
+            "description": "任务正在删除,无法新增目标",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "500": {
+            "description": "写入或回读失败",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/{id}/goals/{gid}": {
+      "patch": {
+        "tags": ["goals"],
+        "summary": "修改任务目标",
+        "description": "修改一个 goal 节点的文本与漏洞类别,记录「目标由 old 变为 new」触发唤醒 planner,并复活任务(与新增一致),让规划者据新目标调整方向。text 去除首尾空白后不能为空;目标必须存在且 kind=goal。",
+        "operationId": "updateTaskGoal",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "任务 id",
+            "schema": { "type": "integer", "format": "int64" }
+          },
+          {
+            "name": "gid",
+            "in": "path",
+            "required": true,
+            "description": "goal 节点 id(正整数)",
+            "schema": { "type": "integer", "format": "int64", "minimum": 1 }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/GoalInput" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "更新后的目标",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Goal" }
+              }
+            }
+          },
+          "400": {
+            "description": "JSON 无效、目标内容为空或 goal id 无效",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "404": {
+            "description": "任务不存在或目标不存在",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "409": {
+            "description": "任务正在删除,无法修改目标",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "500": {
+            "description": "更新或回读失败",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": ["goals"],
+        "summary": "删除任务目标",
+        "description": "硬删除一个 goal 节点(级联删除相关边与锚点),记录「人删除了该目标」触发唤醒 planner 据此重判剩余目标。按产品决策,删除不复活任务。",
+        "operationId": "deleteTaskGoal",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "任务 id",
+            "schema": { "type": "integer", "format": "int64" }
+          },
+          {
+            "name": "gid",
+            "in": "path",
+            "required": true,
+            "description": "goal 节点 id(正整数)",
+            "schema": { "type": "integer", "format": "int64", "minimum": 1 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "删除成功",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/OkResponse" }
+              }
+            }
+          },
+          "400": {
+            "description": "goal id 无效",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "404": {
+            "description": "任务不存在或目标不存在",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "409": {
+            "description": "任务正在删除,无法删除目标",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "500": {
+            "description": "删除失败",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/{id}/constraints": {
+      "get": {
+        "tags": ["constraints"],
+        "summary": "列出任务操作约束",
+        "description": "返回本任务全部操作约束(allow 在前、deny 在后)。约束是提示上下文:是否注入 planner/worker 系统提示由 settings 的 constraints_inject_planner / constraints_inject_worker 开关控制(默认开)。",
+        "operationId": "listTaskConstraints",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "任务 id",
+            "schema": { "type": "integer", "format": "int64" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "约束列表",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/TaskConstraintList" }
+              }
+            }
+          },
+          "404": {
+            "description": "任务不存在",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "500": {
+            "description": "数据库错误",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": ["constraints"],
+        "summary": "新增任务操作约束",
+        "description": "人工新增一条操作约束(kind=allow 允许 / deny 禁止,origin=human)。与 agent 侧 set_constraints 工具写同一张表,但这里不通知 planner:约束仅注入提示上下文,下一轮规划自然读库生效。text 去除首尾空白后不能为空;kind 大小写不敏感。",
+        "operationId": "createTaskConstraint",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "任务 id",
+            "schema": { "type": "integer", "format": "int64" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/TaskConstraintInput" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "新建的约束",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/TaskConstraint" }
+              }
+            }
+          },
+          "400": {
+            "description": "JSON 无效、约束内容为空或 kind 不是 allow/deny",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "404": {
+            "description": "任务不存在",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "409": {
+            "description": "任务正在删除,无法新增约束",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "500": {
+            "description": "写入失败",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/{id}/constraints/{cid}": {
+      "patch": {
+        "tags": ["constraints"],
+        "summary": "修改任务操作约束",
+        "description": "整体改写一条约束的 kind 与 text。不通知 planner,下一轮规划自然生效。注意:约束不存在时后端返回 500 与错误消息「约束不存在」(未做 404 区分)。",
+        "operationId": "updateTaskConstraint",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "任务 id",
+            "schema": { "type": "integer", "format": "int64" }
+          },
+          {
+            "name": "cid",
+            "in": "path",
+            "required": true,
+            "description": "约束 id(正整数)",
+            "schema": { "type": "integer", "format": "int64", "minimum": 1 }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/TaskConstraintInput" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "更新后的约束(回显提交值)",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/TaskConstraint" }
+              }
+            }
+          },
+          "400": {
+            "description": "JSON 无效、约束内容为空、kind 非法或 cid 无效",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "404": {
+            "description": "任务不存在",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "409": {
+            "description": "任务正在删除,无法修改约束",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "500": {
+            "description": "更新失败(含约束不存在,消息「约束不存在」)",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": ["constraints"],
+        "summary": "删除任务操作约束",
+        "description": "删除一条约束。不通知 planner。约束不存在时后端返回 500 与错误消息「约束不存在」。",
+        "operationId": "deleteTaskConstraint",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "任务 id",
+            "schema": { "type": "integer", "format": "int64" }
+          },
+          {
+            "name": "cid",
+            "in": "path",
+            "required": true,
+            "description": "约束 id(正整数)",
+            "schema": { "type": "integer", "format": "int64", "minimum": 1 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "删除成功",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/OkResponse" }
+              }
+            }
+          },
+          "400": {
+            "description": "cid 无效",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "404": {
+            "description": "任务不存在",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "409": {
+            "description": "任务正在删除,无法删除约束",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "500": {
+            "description": "删除失败(含约束不存在,消息「约束不存在」)",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/{id}/scope": {
+      "get": {
+        "tags": ["scope"],
+        "summary": "列出任务测试范围",
+        "description": "返回任务的测试范围行(覆盖度分母 + 授权边界),包含本任务及其直接来源任务继承的 scope 行(本任务的行在前,其余按 id 排序)。kind=company 的行会 JOIN 解析出 company_name。",
+        "operationId": "listTaskScope",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "任务 id",
+            "schema": { "type": "integer", "format": "int64" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "范围行列表",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/TaskScopeList" }
+              }
+            }
+          },
+          "404": {
+            "description": "任务不存在",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "500": {
+            "description": "数据库错误",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "503": {
+            "description": "asset store 未启用",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": ["scope"],
+        "summary": "新增任务测试范围",
+        "description": "手工新增一条范围行(source=manual)。kind/value 由后端解析并幂等 upsert(重复静默忽略):company 的 value 为企业名称或 id(须已存在);root_domain/subdomain 为域名(自动去端口、提取根域);ip/cidr 为 IP 或网段(裸 IP 自动转 /32、/128);icp/keyword 归一化大小写与空白。value 去除首尾空白后不能为空,解析失败返回 400 与具体原因。",
+        "operationId": "addTaskScope",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "任务 id",
+            "schema": { "type": "integer", "format": "int64" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/TaskScopeInput" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "新增(或已存在)的范围行",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/TaskScopeEntry" }
+              }
+            }
+          },
+          "400": {
+            "description": "JSON 无效、value 为空或 kind/value 解析失败",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "404": {
+            "description": "任务不存在",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "503": {
+            "description": "asset store 未启用",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/{id}/scope/{sid}": {
+      "delete": {
+        "tags": ["scope"],
+        "summary": "删除任务测试范围行",
+        "description": "按 id 删除本任务的一条范围行(必须属于该任务,否则 404)。幂等语义:行不存在时返回 404 scope row not found。",
+        "operationId": "deleteTaskScope",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "任务 id",
+            "schema": { "type": "integer", "format": "int64" }
+          },
+          {
+            "name": "sid",
+            "in": "path",
+            "required": true,
+            "description": "scope 行 id",
+            "schema": { "type": "integer", "format": "int64" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "删除成功",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/OkResponse" }
+              }
+            }
+          },
+          "400": {
+            "description": "sid 无效(非整数)",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "404": {
+            "description": "任务不存在或范围行不存在/不属于该任务",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "500": {
+            "description": "数据库错误",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "503": {
+            "description": "asset store 未启用",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/{id}/intercept-rules": {
+      "get": {
+        "tags": ["intercept-rules"],
+        "summary": "列出任务级资产拦截规则",
+        "description": "返回该任务的资产拦截/允许规则(action=block 拦截禁止测试、allow 允许/白名单),按 action、id 排序。规则仅对该任务生效,执行判定见资产门控逻辑。",
+        "operationId": "listTaskInterceptRules",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "任务 id(正整数)",
+            "schema": { "type": "integer", "format": "int64", "minimum": 1 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "规则列表(无规则时返回空数组)",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/TaskInterceptRuleList" }
+              }
+            }
+          },
+          "400": {
+            "description": "任务 id 无效",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "500": {
+            "description": "数据库错误",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": ["intercept-rules"],
+        "summary": "新增任务级资产拦截规则",
+        "description": "为任务新增一条规则。action 省略时默认 block。校验规则:pattern 去除首尾空白后不能为空;kind 必须是七种之一,其中 exact_ip 需为合法 IP 地址、cidr 需为合法网段(形如 192.168.0.0/16),其余为自由文本。",
+        "operationId": "createTaskInterceptRule",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "任务 id(正整数)",
+            "schema": { "type": "integer", "format": "int64", "minimum": 1 }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/TaskInterceptRuleInput" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "新建的规则",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/TaskInterceptRule" }
+              }
+            }
+          },
+          "400": {
+            "description": "JSON 无效、任务 id 无效或字段校验失败",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "500": {
+            "description": "数据库错误",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/{id}/intercept-rules/{rid}": {
+      "put": {
+        "tags": ["intercept-rules"],
+        "summary": "修改任务级资产拦截规则",
+        "description": "整体替换一条规则的可编辑字段(enabled/action/kind/pattern/note)。规则按 task_id 归属限定:规则不存在或不属于该任务时后端以 500 返回数据库空行错误(未做 404 区分)。校验规则与新增一致。",
+        "operationId": "updateTaskInterceptRule",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "任务 id(正整数)",
+            "schema": { "type": "integer", "format": "int64", "minimum": 1 }
+          },
+          {
+            "name": "rid",
+            "in": "path",
+            "required": true,
+            "description": "规则 id(正整数)",
+            "schema": { "type": "integer", "format": "int64", "minimum": 1 }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/TaskInterceptRuleInput" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "更新后的规则",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/TaskInterceptRule" }
+              }
+            }
+          },
+          "400": {
+            "description": "JSON 无效、任务/规则 id 无效或字段校验失败",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "500": {
+            "description": "数据库错误(含规则不存在或不属于该任务)",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": ["intercept-rules"],
+        "summary": "删除任务级资产拦截规则",
+        "description": "删除一条属于该任务的规则。幂等语义:规则不存在或不属于该任务时返回 200 且 deleted=false(不返回 404)。",
+        "operationId": "deleteTaskInterceptRule",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "任务 id(正整数)",
+            "schema": { "type": "integer", "format": "int64", "minimum": 1 }
+          },
+          {
+            "name": "rid",
+            "in": "path",
+            "required": true,
+            "description": "规则 id(正整数)",
+            "schema": { "type": "integer", "format": "int64", "minimum": 1 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "deleted 表示是否实际删除了规则(false=规则不存在或已删)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["deleted"],
+                  "properties": {
+                    "deleted": { "type": "boolean" }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "任务/规则 id 无效",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "500": {
+            "description": "数据库错误",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/{id}/intercept-rules/{rid}/toggle": {
+      "post": {
+        "tags": ["intercept-rules"],
+        "summary": "启停任务级资产拦截规则",
+        "description": "切换一条规则的 enabled 状态(直接设为请求值,非翻转)。规则按 task_id 归属限定;规则不存在时更新不生效但后端仍返回 200(未做存在性校验)。",
+        "operationId": "toggleTaskInterceptRule",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "任务 id(正整数)",
+            "schema": { "type": "integer", "format": "int64", "minimum": 1 }
+          },
+          {
+            "name": "rid",
+            "in": "path",
+            "required": true,
+            "description": "规则 id(正整数)",
+            "schema": { "type": "integer", "format": "int64", "minimum": 1 }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["enabled"],
+                "properties": {
+                  "enabled": {
+                    "type": "boolean",
+                    "description": "目标启停状态;缺省时按 false(停用)处理"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "操作结果(回显 enabled)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["ok", "enabled"],
+                  "properties": {
+                    "ok": { "type": "boolean" },
+                    "enabled": { "type": "boolean" }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "JSON 无效或任务/规则 id 无效",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "500": {
+            "description": "数据库错误",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/{id}/assets": {
+      "post": {
+        "tags": ["task-assets"],
+        "summary": "关联资产或登记范围",
+        "description": "两种互斥模式:提交 asset_ids 时把已有全局资产关联到该任务(source=manual,source_summary 必填,单次最多 100 个资产、去重);提交 scope(结构化范围规则数组,整体原子)时按规则创建/复用全局资产并幂等写入 task_scope 行。两者同时提交返回 400。请求正文上限 512KB(超出返回 413)。成功后触发任务唤醒。",
+        "operationId": "attachTaskAssets",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "任务 id",
+            "schema": { "type": "integer", "format": "int64" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/TaskAssetAttachRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "按模式返回资产关联结果或范围登记结果",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    { "$ref": "#/components/schemas/TaskAssetMutation" },
+                    { "$ref": "#/components/schemas/TaskAssetScopeMutation" }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "JSON 无效、asset_ids 与 scope 同时提交、资产 id 非正/超限、source_summary 缺失或超 500 字符、scope 规则非法",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "404": {
+            "description": "任务不存在或任一资产不存在",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "413": {
+            "description": "请求正文超过 512KB 上限",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "500": {
+            "description": "数据库错误",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/{id}/assets/{assetID}": {
+      "delete": {
+        "tags": ["task-assets"],
+        "summary": "解除任务资产关联",
+        "description": "仅解除任务与资产的关联(全局资产行与探索锚点保留,供历史黑板审计)。资产未关联该任务时返回 404;成功后 detached 返回被解绑的 asset_id 并触发任务唤醒。",
+        "operationId": "detachTaskAsset",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "任务 id",
+            "schema": { "type": "integer", "format": "int64" }
+          },
+          {
+            "name": "assetID",
+            "in": "path",
+            "required": true,
+            "description": "资产 id",
+            "schema": { "type": "integer", "format": "int64" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "解绑成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["detached"],
+                  "properties": {
+                    "detached": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "被解绑的资产 id"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "资产 id 无效",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "404": {
+            "description": "任务不存在或资产未关联该任务",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "500": {
+            "description": "数据库错误",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/{id}/asset-refs": {
+      "get": {
+        "tags": ["task-assets"],
+        "summary": "查询资产关联的意图/事实/发现",
+        "description": "查某个资产在本任务探索图中关联到的意图、事实、发现三类引用(覆盖度图节点抽屉的「关联意图 / 关联事实」数据)。asset_id 必填且必须为正整数。",
+        "operationId": "listTaskAssetRefs",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "任务 id",
+            "schema": { "type": "integer", "format": "int64" }
+          },
+          {
+            "name": "asset_id",
+            "in": "query",
+            "required": true,
+            "description": "资产 id(必填,<=0 返回 400)",
+            "schema": { "type": "integer", "format": "int64", "minimum": 1 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "三类引用列表",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/TaskAssetRefs" }
+              }
+            }
+          },
+          "400": {
+            "description": "缺少 asset_id 或值非法",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "404": {
+            "description": "任务不存在",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "500": {
+            "description": "数据库错误",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tasks/{id}/intent-assets": {
+      "get": {
+        "tags": ["task-assets"],
+        "summary": "列出意图锚定的资产",
+        "description": "返回意图(intent 节点)显式锚定的全部资产,含本任务 worker 的目标与来源任务继承的终态意图目标(继承的非终态意图隐藏),带 source 溯源(source/source_summary/source_node_id)。label 按资产类型预渲染。",
+        "operationId": "listTaskIntentAssets",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "任务 id",
+            "schema": { "type": "integer", "format": "int64" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "意图资产列表",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/IntentAssetList" }
+              }
+            }
+          },
+          "400": {
+            "description": "任务或资产参数非法",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "404": {
+            "description": "任务不存在",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "500": {
+            "description": "数据库错误",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "schemas": {
+    "TaskArchive": {
+      "type": "object",
+      "description": "任务冷存档记录(task_archives 表)。敏感的 profile 配置与 API key 已刻意剔除。",
+      "required": [
+        "id",
+        "task_id",
+        "state",
+        "phase",
+        "progress",
+        "warnings",
+        "format_version",
+        "original_size",
+        "compressed_size",
+        "task_name",
+        "task_description",
+        "task_goal",
+        "original_status",
+        "source_task_ids",
+        "remaining_timeout_seconds",
+        "data_counts",
+        "aggregate_stats",
+        "requested_at",
+        "created_at",
+        "updated_at"
+      ],
+      "properties": {
+        "id": { "type": "integer", "format": "int64", "description": "归档 id" },
+        "task_id": { "type": "integer", "format": "int64", "description": "被归档的任务 id" },
+        "state": {
+          "type": "string",
+          "description": "归档状态机",
+          "enum": [
+            "archive_queued",
+            "archiving",
+            "archive_failed",
+            "ready",
+            "restore_queued",
+            "restoring",
+            "restore_failed",
+            "delete_queued",
+            "deleting",
+            "delete_failed"
+          ]
+        },
+        "phase": {
+          "type": "string",
+          "description": "当前处理阶段,如 queued/starting/stage_files/snapshot_database/snapshot_traffic/compress/compact_traffic/compact_database/verify_package/restore_traffic/restore_files/restore_database/consume_package/stage_package_delete/delete_metadata/failed/interrupted"
+        },
+        "progress": { "type": "integer", "minimum": 0, "maximum": 100, "description": "处理进度百分比" },
+        "error": { "type": "string", "description": "失败原因;仅失败状态有值" },
+        "warnings": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "非致命警告(如归档完成但独占流量清理失败)"
+        },
+        "format_version": { "type": "integer", "description": "归档包格式版本" },
+        "sha256": { "type": "string", "description": "归档包校验和;归档就绪后有值" },
+        "original_size": { "type": "integer", "format": "int64", "description": "原始字节数" },
+        "compressed_size": { "type": "integer", "format": "int64", "description": "压缩后字节数" },
+        "task_name": { "type": "string", "description": "归档时任务名称快照" },
+        "task_description": { "type": "string", "description": "归档时任务描述快照" },
+        "task_goal": { "type": "string", "description": "归档时任务目标快照" },
+        "original_status": {
+          "type": "string",
+          "description": "归档时任务状态",
+          "enum": ["created", "queued", "running", "paused", "done", "failed", "timeout"]
+        },
+        "category_id": { "type": "integer", "format": "int64", "nullable": true, "description": "归档时分类 id 快照;未分类时省略" },
+        "category_name": { "type": "string", "description": "归档时分类名称快照" },
+        "source_task_ids": {
+          "type": "array",
+          "items": { "type": "integer", "format": "int64" },
+          "description": "来源任务 id 列表(继承关系)"
+        },
+        "remaining_timeout_seconds": {
+          "type": "integer",
+          "format": "int64",
+          "description": "归档时剩余运行时限(秒);恢复时按此恢复时钟"
+        },
+        "data_counts": {
+          "type": "object",
+          "description": "归档内各数据表的行数(如 tasks/activity/findings/llm_records/traffic 等)",
+          "additionalProperties": { "type": "integer" }
+        },
+        "aggregate_stats": {
+          "type": "object",
+          "description": "聚合统计(tokens/skills/tools/findings 等嵌套对象)",
+          "additionalProperties": true
+        },
+        "archived_at": { "type": "string", "format": "date-time", "nullable": true, "description": "归档完成时间;未完成时省略" },
+        "requested_at": { "type": "string", "format": "date-time", "description": "最近一次入队时间" },
+        "created_at": { "type": "string", "format": "date-time" },
+        "updated_at": { "type": "string", "format": "date-time" }
+      }
+    },
+    "TaskArchivePage": {
+      "type": "object",
+      "required": ["items", "total", "page", "size"],
+      "properties": {
+        "items": { "type": "array", "items": { "$ref": "#/components/schemas/TaskArchive" } },
+        "total": { "type": "integer", "description": "过滤后的总条数" },
+        "page": { "type": "integer", "description": "当前页码(回退后)" },
+        "size": { "type": "integer", "description": "每页条数(回退后)" }
+      }
+    },
+    "ArchiveBatchItem": {
+      "type": "object",
+      "description": "批量归档/恢复/删除接口的单条结果。",
+      "required": ["id", "ok", "queued"],
+      "properties": {
+        "id": { "type": "string", "description": "任务 id 或归档 id(统一为字符串)" },
+        "archive_id": { "type": "integer", "format": "int64", "description": "对应归档 id;入队成功时返回" },
+        "ok": { "type": "boolean", "description": "本次请求是否成功" },
+        "queued": { "type": "boolean", "description": "是否已入队(ok 的别名)" },
+        "error": { "type": "string", "description": "失败原因;成功时省略" }
+      }
+    },
+    "GoalInput": {
+      "type": "object",
+      "description": "新增/修改目标的请求体。",
+      "required": ["text"],
+      "properties": {
+        "text": { "type": "string", "description": "目标内容,去除首尾空白后不能为空" },
+        "vulnclass": { "type": "string", "description": "可选漏洞类别;空字符串表示不设置" }
+      }
+    },
+    "Goal": {
+      "type": "object",
+      "description": "goal 节点(payload 已拆为 text/vulnclass)。",
+      "required": ["id", "text", "state", "ts"],
+      "properties": {
+        "id": { "type": "string", "description": "goal 节点 id(数字字符串)" },
+        "text": { "type": "string", "description": "目标文本" },
+        "vulnclass": { "type": "string", "description": "漏洞类别;未设置时省略" },
+        "state": {
+          "type": "string",
+          "description": "目标状态",
+          "enum": ["open", "met", "abandoned"]
+        },
+        "origin": { "type": "string", "description": "来源:human(人工)/planner/system 等;为空时省略" },
+        "ts": { "type": "string", "format": "date-time", "description": "创建时间(RFC3339)" }
+      }
+    },
+    "GoalList": {
+      "type": "object",
+      "required": ["goals"],
+      "properties": {
+        "goals": { "type": "array", "items": { "$ref": "#/components/schemas/Goal" } }
+      }
+    },
+    "TaskConstraintInput": {
+      "type": "object",
+      "description": "新增/修改约束的请求体。kind 大小写不敏感。",
+      "required": ["text", "kind"],
+      "properties": {
+        "text": { "type": "string", "description": "约束内容,去除首尾空白后不能为空" },
+        "kind": { "type": "string", "enum": ["allow", "deny"], "description": "allow=允许 / deny=禁止" }
+      }
+    },
+    "TaskConstraint": {
+      "type": "object",
+      "description": "一条操作约束(allow/deny)。",
+      "required": ["id", "kind", "text"],
+      "properties": {
+        "id": { "type": "string", "description": "约束 id(数字字符串)" },
+        "kind": { "type": "string", "enum": ["allow", "deny"], "description": "allow=允许 / deny=禁止" },
+        "text": { "type": "string", "description": "约束文本" },
+        "origin": { "type": "string", "description": "来源:human/system 等;为空时省略" },
+        "ts": { "type": "string", "format": "date-time", "description": "创建时间(RFC3339);为空时省略" }
+      }
+    },
+    "TaskConstraintList": {
+      "type": "object",
+      "required": ["constraints"],
+      "properties": {
+        "constraints": { "type": "array", "items": { "$ref": "#/components/schemas/TaskConstraint" }, "description": "allow 在前、deny 在后" }
+      }
+    },
+    "TaskScopeInput": {
+      "type": "object",
+      "description": "手工新增范围行的请求体。",
+      "required": ["kind", "value"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "description": "范围类型",
+          "enum": ["company", "root_domain", "subdomain", "ip", "cidr", "icp", "keyword"]
+        },
+        "value": { "type": "string", "description": "范围值:company 为企业名称或 id;root_domain/subdomain 为域名;ip/cidr 为 IP 或网段(裸 IP 自动转 /32、/128);icp/keyword 为文本" },
+        "reason": { "type": "string", "description": "可选备注" }
+      }
+    },
+    "TaskScopeEntry": {
+      "type": "object",
+      "description": "任务测试范围的一行(覆盖度分母 + 授权边界)。",
+      "required": ["id", "task_id", "kind", "source"],
+      "properties": {
+        "id": { "type": "integer", "format": "int64" },
+        "task_id": { "type": "integer", "format": "int64" },
+        "kind": {
+          "type": "string",
+          "description": "范围类型",
+          "enum": ["company", "root_domain", "subdomain", "ip", "cidr", "icp", "keyword"]
+        },
+        "company_id": { "type": "integer", "format": "int64", "nullable": true, "description": "企业 id;仅 kind=company 有值" },
+        "company_name": { "type": "string", "description": "企业名称;仅 kind=company 有值" },
+        "domain": { "type": "string", "description": "域名;kind=root_domain/subdomain 有值" },
+        "net": { "type": "string", "description": "网段;kind=ip/cidr 有值" },
+        "value": { "type": "string", "description": "归一化值;kind=icp/keyword 有值" },
+        "source": {
+          "type": "string",
+          "description": "写入来源",
+          "enum": ["auto", "agent", "manual"]
+        },
+        "reason": { "type": "string", "description": "备注;为空时省略" }
+      }
+    },
+    "TaskScopeList": {
+      "type": "object",
+      "required": ["scope"],
+      "properties": {
+        "scope": {
+          "type": "array",
+          "items": { "$ref": "#/components/schemas/TaskScopeEntry" },
+          "description": "本任务行在前,其后为来源任务继承的行"
+        }
+      }
+    },
+    "ScopeRuleInput": {
+      "type": "object",
+      "description": "结构化范围规则(与新增企业的范围规则同构)。",
+      "required": ["value"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "description": "省略时按 value 自动识别(IP/CIDR/域名/关键词)",
+          "enum": ["domain", "ip", "cidr", "icp", "keyword"]
+        },
+        "value": { "type": "string", "description": "规则原始输入" }
+      }
+    },
+    "TaskAssetAttachRequest": {
+      "type": "object",
+      "description": "任务资产关联请求。asset_ids 与 scope 二选一,同时提交返回 400。",
+      "properties": {
+        "asset_ids": {
+          "type": "array",
+          "items": { "type": "integer", "format": "int64", "minimum": 1 },
+          "maxItems": 100,
+          "description": "要关联的全局资产 id 列表(1-100 个,自动去重);走资产关联模式时必填"
+        },
+        "source_summary": {
+          "type": "string",
+          "description": "操作者撰写的来源说明;走资产关联模式时必填,最多 500 字符"
+        },
+        "scope": {
+          "type": "array",
+          "items": { "$ref": "#/components/schemas/ScopeRuleInput" },
+          "description": "结构化范围规则;提交后走范围登记模式(原子),此时不能带 asset_ids"
+        }
+      }
+    },
+    "TaskAssetMutation": {
+      "type": "object",
+      "description": "按 asset_ids 关联资产的结果。",
+      "required": ["requested", "attached", "existing"],
+      "properties": {
+        "requested": { "type": "integer", "description": "去重后请求的资产数" },
+        "attached": { "type": "integer", "description": "本次新建的关联数" },
+        "existing": { "type": "integer", "description": "请求中已关联于该任务的资产数" }
+      }
+    },
+    "TaskAssetScopeMutation": {
+      "type": "object",
+      "description": "按 scope 规则登记范围的结果。",
+      "required": ["requested", "assets_linked", "assets_existing", "scopes_added", "scopes_existing"],
+      "properties": {
+        "requested": { "type": "integer", "description": "提交的规则条数" },
+        "assets_linked": { "type": "integer", "description": "本次新建/新关联的资产行数" },
+        "assets_existing": { "type": "integer", "description": "已存在的资产行数" },
+        "scopes_added": { "type": "integer", "description": "本次新增的 task_scope 行数" },
+        "scopes_existing": { "type": "integer", "description": "已存在的 task_scope 行数" }
+      }
+    },
+    "TaskInterceptRuleInput": {
+      "type": "object",
+      "description": "任务级拦截规则的写入体(action 省略时默认 block)。",
+      "required": ["kind", "pattern"],
+      "properties": {
+        "enabled": { "type": "boolean", "default": false, "description": "是否启用" },
+        "action": {
+          "type": "string",
+          "enum": ["block", "allow"],
+          "default": "block",
+          "description": "block=拦截(禁止测试) / allow=允许(白名单)"
+        },
+        "kind": {
+          "type": "string",
+          "description": "匹配类型:exact_ip 需合法 IP、cidr 需合法网段,其余自由文本",
+          "enum": ["exact_domain", "exact_ip", "exact_url", "fuzzy_domain", "fuzzy_ip", "fuzzy_url", "cidr"]
+        },
+        "pattern": { "type": "string", "description": "匹配目标(域名/IP/URL/CIDR);去除首尾空白后不能为空" },
+        "note": { "type": "string", "description": "可选备注" }
+      }
+    },
+    "TaskInterceptRule": {
+      "type": "object",
+      "description": "任务级资产拦截/允许规则。",
+      "required": ["id", "enabled", "action", "kind", "pattern", "note", "builtin", "created_at", "updated_at"],
+      "properties": {
+        "id": { "type": "integer", "format": "int64" },
+        "enabled": { "type": "boolean", "description": "是否启用" },
+        "action": { "type": "string", "enum": ["block", "allow"], "description": "block=拦截 / allow=允许(白名单)" },
+        "kind": {
+          "type": "string",
+          "description": "匹配类型",
+          "enum": ["exact_domain", "exact_ip", "exact_url", "fuzzy_domain", "fuzzy_ip", "fuzzy_url", "cidr"]
+        },
+        "pattern": { "type": "string", "description": "匹配目标" },
+        "note": { "type": "string", "description": "备注" },
+        "builtin": { "type": "boolean", "description": "是否内置规则;任务级恒为 false" },
+        "created_at": { "type": "string", "format": "date-time" },
+        "updated_at": { "type": "string", "format": "date-time" }
+      }
+    },
+    "TaskInterceptRuleList": {
+      "type": "object",
+      "required": ["rules"],
+      "properties": {
+        "rules": { "type": "array", "items": { "$ref": "#/components/schemas/TaskInterceptRule" }, "description": "按 action、id 排序;无规则时为空数组" }
+      }
+    },
+    "IntentAsset": {
+      "type": "object",
+      "description": "意图显式锚定的一个资产(含溯源)。",
+      "required": [
+        "intent_id",
+        "asset_id",
+        "type",
+        "label",
+        "source",
+        "source_summary",
+        "source_task_id",
+        "inherited"
+      ],
+      "properties": {
+        "intent_id": { "type": "integer", "format": "int64", "description": "锚定该资产的意图节点 id" },
+        "asset_id": { "type": "integer", "format": "int64" },
+        "type": { "type": "string", "description": "资产类型(root_domain/subdomain/ip/app/service/endpoint 等)" },
+        "label": { "type": "string", "description": "按类型预渲染的展示标签" },
+        "source": { "type": "string", "description": "关联来源(anchor/manual 等)" },
+        "source_summary": { "type": "string", "description": "来源说明" },
+        "source_node_id": { "type": "integer", "format": "int64", "nullable": true, "description": "来源节点 id;无时省略" },
+        "source_task_id": { "type": "integer", "format": "int64", "description": "所属(来源)任务 id" },
+        "inherited": { "type": "boolean", "description": "是否继承自来源任务" }
+      }
+    },
+    "IntentAssetList": {
+      "type": "object",
+      "required": ["assets"],
+      "properties": {
+        "assets": { "type": "array", "items": { "$ref": "#/components/schemas/IntentAsset" } }
+      }
+    },
+    "CoverageAssetRef": {
+      "type": "object",
+      "description": "某资产在本任务探索图中的一个关联引用。",
+      "required": ["id", "kind", "state", "summary"],
+      "properties": {
+        "id": { "type": "integer", "format": "int64", "description": "引用的节点/发现 id" },
+        "kind": { "type": "string", "enum": ["intent", "fact", "finding"], "description": "引用类型" },
+        "state": { "type": "string", "description": "引用节点状态" },
+        "summary": { "type": "string", "description": "摘要" },
+        "source_task_id": { "type": "string", "description": "来源任务 id;继承时有值" },
+        "inherited": { "type": "boolean", "description": "是否继承自来源任务" }
+      }
+    },
+    "TaskAssetRefs": {
+      "type": "object",
+      "required": ["intents", "facts", "findings"],
+      "properties": {
+        "intents": { "type": "array", "items": { "$ref": "#/components/schemas/CoverageAssetRef" }, "description": "关联的意图" },
+        "facts": { "type": "array", "items": { "$ref": "#/components/schemas/CoverageAssetRef" }, "description": "关联的事实" },
+        "findings": { "type": "array", "items": { "$ref": "#/components/schemas/CoverageAssetRef" }, "description": "关联的发现" }
+      }
+    },
+    "OkResponse": {
+      "type": "object",
+      "required": ["ok"],
+      "properties": {
+        "ok": { "type": "boolean" }
+      }
+    }
+  }
+}

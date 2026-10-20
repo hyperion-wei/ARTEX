@@ -1,0 +1,2107 @@
+{
+  "paths": {
+    "/api/agents": {
+      "get": {
+        "tags": ["agents"],
+        "summary": "Agent 列表",
+        "description": "列出全部 agent(内置 + 自定义),按 id 升序返回。无服务端过滤参数:响应不含 visible/enabled 之类的 query 过滤,每项附带基于可见性聚合的绑定计数(mcp_count/skill_count/tool_count,读取失败时尽力而为置 0,不影响列表本身)。enabled、builtin 等过滤由前端按字段自行完成。",
+        "operationId": "listAgents",
+        "responses": {
+          "200": {
+            "description": "Agent 列表(含绑定计数)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "agents": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/AgentItem" }
+                    }
+                  },
+                  "required": ["agents"]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "数据库查询失败",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      },
+      "post": {
+        "tags": ["agents"],
+        "summary": "创建自定义 Agent",
+        "description": "创建一个自定义会话型 agent(builtin=false,role=assistant),并为其种入一份起始提示词(编辑器不至于空白)。key 需匹配 ^[a-z][a-z0-9_]*$(小写字母开头,仅小写字母/数字/下划线);name 去空格后不能为空;key 与现有 agent 冲突返回 409。",
+        "operationId": "createAgent",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/AgentCreateInput" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "创建成功,返回新建的 agent(计数字段为 0)",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/AgentItem" }
+              }
+            }
+          },
+          "400": {
+            "description": "JSON 解析失败 / key 格式非法 / 名称为空",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "409": {
+            "description": "该 key 已存在",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "500": {
+            "description": "数据库写入失败",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    },
+    "/api/agents/{key}": {
+      "get": {
+        "tags": ["agents"],
+        "summary": "Agent 详情",
+        "description": "一次性返回编辑器所需的全部数据:agent 配置、当前提示词、变量目录(含全局运行时变量)、历史版本、MCP/Skill 可见性、可绑定的 LLM 配置候选、以及收尾(per-run 与任务级超时两套)提示词的当前值和内置默认值。",
+        "operationId": "getAgent",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "Agent key。内置: goals/planner/mainagent/worker/auto/pentest;自定义: ^[a-z][a-z0-9_]*$"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Agent 详情",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/AgentDetail" }
+              }
+            }
+          },
+          "404": {
+            "description": "agent not found",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "500": {
+            "description": "数据库查询失败",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      },
+      "patch": {
+        "tags": ["agents"],
+        "summary": "修改 Agent 名称/描述",
+        "description": "更新自定义 agent 的显示名称与描述(全量覆盖 description)。内置 agent 返回 400 拒绝。name 去空格后不能为空。",
+        "operationId": "updateAgentMeta",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "Agent key(仅自定义 agent 可修改)"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/AgentMetaInput" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "修改成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": { "type": "boolean" }
+                  },
+                  "required": ["ok"]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "内置 agent 不可修改 / JSON 解析失败 / 名称为空",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "404": {
+            "description": "agent not found",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "500": {
+            "description": "数据库写入失败",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      },
+      "delete": {
+        "tags": ["agents"],
+        "summary": "删除自定义 Agent",
+        "description": "删除自定义 agent(内置返回 400)。提示词/变量/可见性经外键级联删除;工具绑定清理与触发器清理为尽力而为(失败仅记日志,不影响删除结果)。",
+        "operationId": "deleteAgent",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "Agent key(仅自定义 agent 可删除)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "删除成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "deleted": { "type": "string", "description": "被删除的 agent key" }
+                  },
+                  "required": ["deleted"]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "内置 agent 不可删除",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "404": {
+            "description": "agent not found",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "500": {
+            "description": "数据库写入失败",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    },
+    "/api/agents/{key}/config": {
+      "put": {
+        "tags": ["agents"],
+        "summary": "保存 Agent 运行配置",
+        "description": "更新 agent 的运行时配置并即时重建生效(无需重启)。所有字段均可选(局部补丁):未提供的字段保持原值。llm_profile_id 三态:字段缺省=不动;显式 null=解绑(跟随任务/全局);数字=绑定该 LLM 配置(绑定前校验配置存在,否则 400)。trigger_run_mode/trigger_merge_mode/trigger_max_parallel 三者作为一组写入:提供任一即整体生效,未提供的用当前存量值回填。max_turns/run_seconds 为负时归 0(0=不限)。",
+        "operationId": "saveAgentConfig",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "Agent key"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/AgentConfigInput" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "保存成功(回显本次写入的 max_turns/run_seconds,若提供)",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/AgentConfigResult" }
+              }
+            }
+          },
+          "400": {
+            "description": "JSON 解析失败 / llm_profile_id 格式错误 / 指定的 LLM 配置不存在或无效",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "404": {
+            "description": "agent not found",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "500": {
+            "description": "数据库写入失败",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    },
+    "/api/agents/{key}/prompt": {
+      "put": {
+        "tags": ["agents"],
+        "summary": "保存 Agent 提示词",
+        "description": "将模板保存为新的提示词版本(version 递增)并立即生效为当前版本。模板按 Go text/template 语法解析,引用的 {{.Var}} 必须在该 agent 的变量白名单内(含全局运行时变量 Now/DataDir),否则 400。note 为版本备注(如修改原因),可为空。空模板同样合法(保存为空版本)。",
+        "operationId": "saveAgentPrompt",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "Agent key"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/AgentPromptSaveInput" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "保存成功,返回新版本号",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "version": { "type": "integer", "description": "新版本号(从 1 递增)" }
+                  },
+                  "required": ["version"]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "JSON 解析失败 / 模板语法错误 / 变量不在该 agent 允许列表",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "404": {
+            "description": "agent not found",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "500": {
+            "description": "数据库写入失败",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    },
+    "/api/agents/{key}/prompt/reset": {
+      "post": {
+        "tags": ["agents"],
+        "summary": "恢复内置默认提示词",
+        "description": "把代码内置的默认提示词追加为新版本并设为当前版本(显式「恢复默认」动作)。仅内置 agent(goals/planner/mainagent/worker/auto/pentest)有代码内默认模板;自定义 agent 返回 400。无请求体。",
+        "operationId": "resetAgentPrompt",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "Agent key(需为有内置默认提示词的 agent)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "恢复成功,返回新版本号",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "version": { "type": "integer", "description": "新版本号" }
+                  },
+                  "required": ["version"]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "该 agent 无内置默认提示词,无法恢复",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "404": {
+            "description": "agent not found",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "500": {
+            "description": "数据库写入失败",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    },
+    "/api/agents/{key}/prompts": {
+      "get": {
+        "tags": ["agents"],
+        "summary": "提示词历史版本",
+        "description": "列出该 agent 的全部提示词历史版本,按 version 降序。",
+        "operationId": "listAgentPromptVersions",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "Agent key"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "历史版本列表",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "versions": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/AgentPromptVersion" }
+                    }
+                  },
+                  "required": ["versions"]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "agent not found",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "500": {
+            "description": "数据库查询失败",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    },
+    "/api/agents/{key}/prompt/preview": {
+      "post": {
+        "tags": ["agents"],
+        "summary": "预览渲染提示词",
+        "description": "用样例值渲染提示词模板(不落库)。变量取值优先级:请求 sample > 变量目录的 example;目录外的 {{.Var}} 会导致渲染失败。template 省略(或为空)时使用该 agent 当前已保存的提示词。渲染失败也返回 200,body 里 error 字段给出原因(渲染结果为空串)。请求体 JSON 解析错误会被忽略(按空值处理)。",
+        "operationId": "previewAgentPrompt",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "Agent key"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/PromptPreviewInput" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "渲染结果(渲染失败时 error 字段非空、rendered 为空串)",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/PromptPreviewResult" }
+              }
+            }
+          },
+          "404": {
+            "description": "agent not found",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "500": {
+            "description": "数据库查询失败",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    },
+    "/api/agents/{key}/variables": {
+      "get": {
+        "tags": ["agents"],
+        "summary": "提示词变量目录",
+        "description": "返回该 agent 的提示词变量白名单(供模板校验与编辑器提示),并追加全局运行时变量(Now=服务端当前时间、DataDir=数据根目录)。与 agent 目录同名的存量条目会被全局项覆盖丢弃,保证返回列表 name 唯一。",
+        "operationId": "listAgentPromptVariables",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "Agent key"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "变量目录(按 name 排序)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "variables": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/AgentPromptVar" }
+                    }
+                  },
+                  "required": ["variables"]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "agent not found",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "500": {
+            "description": "数据库查询失败",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    },
+    "/api/agents/{key}/wrapup": {
+      "put": {
+        "tags": ["agents"],
+        "summary": "保存收尾提示词",
+        "description": "保存 agent 的收尾(settlement)提示词——单次运行超时/步数耗尽时注入的提示文本。prompt 传空串=清除覆盖、恢复代码内置默认;max_turns 可选(省略=不动已存值,传值则覆盖,负数归 0;0=用内置默认轮数)。",
+        "operationId": "saveAgentWrapup",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "Agent key"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/AgentWrapupInput" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "保存成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": { "type": "boolean" }
+                  },
+                  "required": ["ok"]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "JSON 解析失败",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "404": {
+            "description": "agent not found",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "500": {
+            "description": "数据库写入失败",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    },
+    "/api/agents/{key}/wrapup/reset": {
+      "post": {
+        "tags": ["agents"],
+        "summary": "重置收尾提示词",
+        "description": "清除 agent 的收尾提示词与轮数覆盖,恢复代码内置默认,并回显内置默认值(供占位/提示)。无请求体。",
+        "operationId": "resetAgentWrapup",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "Agent key"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "重置成功,回显内置默认值",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": { "type": "boolean" },
+                    "wrapup_default": { "type": "string", "description": "内置默认收尾提示词" },
+                    "wrapup_max_turns_default": { "type": "integer", "description": "内置默认收尾轮数" }
+                  },
+                  "required": ["ok", "wrapup_default", "wrapup_max_turns_default"]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "agent not found",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "500": {
+            "description": "数据库写入失败",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    },
+    "/api/agents/{key}/wrapup/task-timeout": {
+      "put": {
+        "tags": ["agents"],
+        "summary": "保存任务级超时收尾提示词",
+        "description": "保存 agent 的任务级超时收尾词——与 per-run 收尾是两套,仅 worker/planner 有内置默认(其余 agent 可存但无默认可回落)。prompt 空=清除覆盖;max_turns 省略=保留原值,负数归 0,0=用内置默认。",
+        "operationId": "saveAgentTaskTimeoutWrapup",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "Agent key(通常为 worker/planner)"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/AgentWrapupInput" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "保存成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": { "type": "boolean" }
+                  },
+                  "required": ["ok"]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "JSON 解析失败",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "404": {
+            "description": "agent not found",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "500": {
+            "description": "数据库写入失败",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    },
+    "/api/agents/{key}/wrapup/task-timeout/reset": {
+      "post": {
+        "tags": ["agents"],
+        "summary": "重置任务级超时收尾提示词",
+        "description": "清除任务级超时收尾词与轮数覆盖,恢复代码内置默认,并回显默认值。无请求体。",
+        "operationId": "resetAgentTaskTimeoutWrapup",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "Agent key(通常为 worker/planner)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "重置成功,回显内置默认值",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": { "type": "boolean" },
+                    "task_timeout_wrapup_default": { "type": "string", "description": "内置默认任务级超时收尾词(该 agent 无内置默认时为空串)" },
+                    "task_timeout_wrapup_max_turns_default": { "type": "integer", "description": "内置默认轮数" }
+                  },
+                  "required": ["ok", "task_timeout_wrapup_default", "task_timeout_wrapup_max_turns_default"]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "agent not found",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "500": {
+            "description": "数据库写入失败",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    },
+    "/api/agents/{key}/triggers": {
+      "get": {
+        "tags": ["agents"],
+        "summary": "Agent 触发器列表",
+        "description": "列出挂在该 agent 上的全部 P3 触发器(仅自定义 agent 支持),按 id 升序。",
+        "operationId": "listAgentTriggers",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "Agent key"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "触发器列表",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "triggers": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/Trigger" }
+                    }
+                  },
+                  "required": ["triggers"]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "agent not found",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "500": {
+            "description": "数据库查询失败",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      },
+      "post": {
+        "tags": ["agents"],
+        "summary": "创建触发器",
+        "description": "为该 agent 创建一个触发器(内置 agent 返回 400「触发器仅支持自定义 agent」)。校验:至少一种触发条件(interval_sec>0 或 on_finding/on_goal_met/on_task_timeout/on_tool_call/on_task_create 任一为 true);on_tool_call=true 时 tool_names 不能为空。interval_sec 为负时归 0。创建成功返回带 id 的完整触发器。",
+        "operationId": "createAgentTrigger",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "Agent key(须为自定义 agent)"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/TriggerInput" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "创建成功,返回新建的触发器",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Trigger" }
+              }
+            }
+          },
+          "400": {
+            "description": "内置 agent 不支持 / JSON 解析失败 / 至少选择一种触发条件 / 工具调用触发至少选择一个工具",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "404": {
+            "description": "agent not found",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "500": {
+            "description": "数据库写入失败",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    },
+    "/api/triggers/{id}": {
+      "patch": {
+        "tags": ["triggers"],
+        "summary": "更新触发器",
+        "description": "按 id 全量更新触发器的全部可编辑字段(不含 last_fire)。校验规则与创建相同:至少一种触发条件;on_tool_call 需非空 tool_names。注意:id 不存在时 UPDATE 影响 0 行仍返回 200(不会 404)。",
+        "operationId": "updateTrigger",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "format": "int64" },
+            "description": "触发器 ID(非整数返回 400 bad trigger id)"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/TriggerInput" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "更新成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": { "type": "boolean" }
+                  },
+                  "required": ["ok"]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "bad trigger id / JSON 解析失败 / 触发条件校验失败",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "500": {
+            "description": "数据库写入失败",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      },
+      "delete": {
+        "tags": ["triggers"],
+        "summary": "删除触发器",
+        "description": "按 id 删除触发器。id 不存在时同样返回 200(deleted 回显该 id)。",
+        "operationId": "deleteTrigger",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "format": "int64" },
+            "description": "触发器 ID(非整数返回 400 bad trigger id)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "删除成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "deleted": { "type": "integer", "format": "int64", "description": "被删除的触发器 ID" }
+                  },
+                  "required": ["deleted"]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "bad trigger id",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "500": {
+            "description": "数据库写入失败",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    },
+    "/api/agents/{key}/visibility": {
+      "get": {
+        "tags": ["agents"],
+        "summary": "Agent 资源可见性",
+        "description": "返回该 agent 的资源可见范围,按 kind 分两类:mcp(可见的 MCP 服务器 ID 列表,int64)与 skill(可见的 skill 名列表,string)。空列表=该类资源全部不可见。",
+        "operationId": "getAgentVisibility",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "Agent key"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "可见性(kind: mcp=服务器 ID 数组, skill=skill 名数组)",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/AgentVisibility" }
+              }
+            }
+          },
+          "404": {
+            "description": "agent not found",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "500": {
+            "description": "数据库查询失败",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      },
+      "put": {
+        "tags": ["agents"],
+        "summary": "设置 Agent 资源可见性",
+        "description": "整体替换该 agent 的资源可见范围:mcp 传 MCP 服务器 ID 数组,skill 传 skill 名数组。两个 kind 分别整体替换——省略某个字段等于清空该类可见性(传空数组效果相同)。先写 mcp 再写 skill,任一步失败返回 500。",
+        "operationId": "setAgentVisibility",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "Agent key"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/AgentVisibility" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "设置成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": { "type": "boolean" }
+                  },
+                  "required": ["ok"]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "JSON 解析失败",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "404": {
+            "description": "agent not found",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "500": {
+            "description": "数据库写入失败",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    },
+    "/api/tools": {
+      "get": {
+        "tags": ["tools"],
+        "summary": "工具目录列表",
+        "description": "返回整个工具目录(内置 system 工具 + 自定义工具),按 key 排序。无服务端 enabled 过滤参数——全部条目都会返回,enabled 是条目上的字段,由前端自行过滤。每项附 calls 累计调用次数(运行时账本聚合,尽力而为:读取失败时为 0,不影响列表)。",
+        "operationId": "listTools",
+        "responses": {
+          "200": {
+            "description": "工具目录(含调用计数)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "tools": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/ToolItem" }
+                    }
+                  },
+                  "required": ["tools"]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "数据库查询失败",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    },
+    "/api/tools/{key}": {
+      "put": {
+        "tags": ["tools"],
+        "summary": "保存工具配置",
+        "description": "保存内置(system)工具的页面可编辑字段:description、参数 schema(结构应保持不变,仅参数级 description/default 可动)、agent 绑定、enabled 开关。四个字段全量覆盖:省略某字段会将其置零值(如 enabled 缺省=false)。key 取自路径且不可变(与 Go 实现焊死)。",
+        "operationId": "updateTool",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "工具 key(内置工具目录里的 key)"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/ToolUpdateInput" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "保存成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": { "type": "boolean" }
+                  },
+                  "required": ["ok"]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "JSON 解析失败",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "404": {
+            "description": "工具不存在",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "500": {
+            "description": "数据库写入失败",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    },
+    "/api/tools/{key}/reset": {
+      "post": {
+        "tags": ["tools"],
+        "summary": "重置工具为代码默认",
+        "description": "用代码里定义的默认值覆写工具行(description/schema/agent 绑定)并重新启用——显式「恢复默认」动作(启动时的 seed 是仅首次插入、绝不覆盖用户编辑)。内置工具与编排/平台工具(auto 默认绑定)均支持;非内置或不存在的 key 返回 404。无请求体。",
+        "operationId": "resetTool",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "工具 key(须为内置/编排/平台工具)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "重置成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": { "type": "boolean" }
+                  },
+                  "required": ["ok"]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "非内置工具或不存在",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "500": {
+            "description": "数据库写入失败",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    },
+    "/api/tools/custom": {
+      "post": {
+        "tags": ["tools"],
+        "summary": "创建自定义工具",
+        "description": "创建一个自定义执行器工具(system=false)。key 需匹配 ^[a-z][a-z0-9_]*$ 且不得与现有内置/自定义工具冲突(409)。kind 决定执行方式:command(渲染命令后复用 Bash 底层执行)/script(仅 Python:临时文件+stdin 参数 JSON+TOOL_* 环境变量)/http(原生请求,可设代理)/shell(仅 bash 环境声明,不产生可调用工具)。kind=http 必须提供含 properties 的参数 schema(空 schema 被拒绝);command/script 的 schema 可省略(自动降级为 {args:string} 薄壳)。",
+        "operationId": "createCustomTool",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CustomToolCreateInput" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "创建成功,返回工具 key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "key": { "type": "string", "description": "新建的工具 key" }
+                  },
+                  "required": ["key"]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "JSON 解析失败 / key 格式非法 / kind 非法 / http 工具必须提供参数 JSON Schema",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "409": {
+            "description": "该 key 已存在(内置或自定义工具)",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "500": {
+            "description": "数据库写入失败",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    },
+    "/api/tools/custom/test": {
+      "post": {
+        "tags": ["tools"],
+        "summary": "试运行自定义工具",
+        "description": "编辑器的干跑:用给定(可能未保存)的 exec 规格与样例参数实际执行一次并返回原始输出,不落库。与真实调用共用同一执行路径(command/script/http)。kind=shell 无可执行内容返回 400。外层硬上限 10 分钟;每类工具自身超时由 exec.timeout_ms 控制(默认:command/script 120000ms、http 30000ms)。params 缺省为空对象。",
+        "operationId": "testCustomTool",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CustomToolTestInput" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "执行完成(执行出错也是 200,看 is_error 标志)",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/CustomToolTestResult" }
+              }
+            }
+          },
+          "400": {
+            "description": "无效的请求体 / shell 类型无可执行内容 / 未知工具类型",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    },
+    "/api/tools/custom/{key}": {
+      "put": {
+        "tags": ["tools"],
+        "summary": "更新自定义工具",
+        "description": "按 key 更新自定义工具(system=false)的全部可编辑字段。请求体中的 key 字段被忽略(以路径为准)。目标不存在或为内置工具时返回 400「只能编辑自定义工具」(不返回 404)。kind=http 仍要求 schema 含 properties。",
+        "operationId": "updateCustomTool",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "自定义工具 key(^[a-z][a-z0-9_]*$)"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CustomToolUpdateInput" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "更新成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": { "type": "boolean" }
+                  },
+                  "required": ["ok"]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "只能编辑自定义工具(不存在或为内置) / JSON 解析失败 / kind 非法 / http 工具必须提供参数 JSON Schema",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "500": {
+            "description": "数据库写入失败",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      },
+      "delete": {
+        "tags": ["tools"],
+        "summary": "删除自定义工具",
+        "description": "按 key 删除自定义工具。key 不存在时同样返回 200(deleted 回显该 key)。",
+        "operationId": "deleteCustomTool",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "自定义工具 key"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "删除成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "deleted": { "type": "string", "description": "被删除的工具 key" }
+                  },
+                  "required": ["deleted"]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "数据库写入失败",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    },
+    "/api/mcp": {
+      "get": {
+        "tags": ["mcp"],
+        "summary": "MCP 服务器列表",
+        "description": "列出全部 MCP 服务器配置,按 id 升序;每项附带 mcp_tools_cache 里已发现的工具名(tools 字段,未做过发现时为空/缺省)。",
+        "operationId": "listMCPServers",
+        "responses": {
+          "200": {
+            "description": "MCP 服务器列表",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "servers": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/MCPServer" }
+                    }
+                  },
+                  "required": ["servers"]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "数据库查询失败",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      },
+      "post": {
+        "tags": ["mcp"],
+        "summary": "新增/更新 MCP 服务器",
+        "description": "保存一条 MCP 服务器配置:id=0(或缺省)为新增,id 非 0 为整体更新(name/transport/command/args/env/url/enabled/insecure 全量覆盖;tools 字段不落库、提交时忽略)。新增且 enabled=true 时同步做一次工具发现并写缓存(45 秒上限,失败仅记日志不影响保存结果);纯更新不触发发现。transport 决定连接方式:stdio(command+args+env)、http(url)、sse(url);http 可设 insecure 跳过自签名证书校验。",
+        "operationId": "saveMCPServer",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/MCPServerInput" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "保存成功,返回服务器 ID",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": { "type": "integer", "format": "int64", "description": "新增行的 ID(更新时回显原 id)" }
+                  },
+                  "required": ["id"]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "JSON 解析失败",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "500": {
+            "description": "数据库写入失败",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    },
+    "/api/mcp/{id}": {
+      "delete": {
+        "tags": ["mcp"],
+        "summary": "删除 MCP 服务器",
+        "description": "按 id 删除 MCP 服务器(工具缓存一并清理)。id 非数字时按 0 处理(不报错);id 不存在时同样返回 200。",
+        "operationId": "deleteMCPServer",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "format": "int64" },
+            "description": "MCP 服务器 ID(非数字按 0 处理)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "删除成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "deleted": { "type": "integer", "format": "int64", "description": "被删除的 MCP 服务器 ID" }
+                  },
+                  "required": ["deleted"]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "数据库写入失败",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    },
+    "/api/mcp/{id}/tools": {
+      "get": {
+        "tags": ["mcp"],
+        "summary": "MCP 工具清单(缓存)",
+        "description": "返回该 MCP 服务器已缓存的工具清单(name+description),按工具名排序。只读 mcp_tools_cache 缓存、不发起远端连接——新增未发现过或想刷新请用 POST /api/mcp/{id}/refresh。服务器不存在时返回空列表(不报 404)。",
+        "operationId": "listMCPServerTools",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "format": "int64" },
+            "description": "MCP 服务器 ID(非数字按 0 处理)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "缓存的工具清单",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "tools": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/MCPTool" }
+                    }
+                  },
+                  "required": ["tools"]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "数据库查询失败",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    },
+    "/api/mcp/{id}/refresh": {
+      "post": {
+        "tags": ["mcp"],
+        "summary": "重新发现 MCP 工具",
+        "description": "按 id 重新连接该 MCP 服务器、拉取远端工具清单(tools/list)并覆写缓存(45 秒上限)——配置变更或此前发现失败后无需重启即可修复。成功后返回最新缓存清单。无请求体。",
+        "operationId": "refreshMCPServerTools",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer", "format": "int64" },
+            "description": "MCP 服务器 ID(非数字按 0 处理,随后 404)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "发现成功,返回最新工具清单",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "tools": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/MCPTool" }
+                    }
+                  },
+                  "required": ["tools"]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "MCP 不存在",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "500": {
+            "description": "读取服务器列表失败",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "502": {
+            "description": "工具发现失败(连接/发现超时或出错)",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    }
+  },
+  "schemas": {
+    "AgentItem": {
+      "type": "object",
+      "description": "Agent 配置项(DTO,id 为字符串)。列表接口额外填充 mcp_count/skill_count/tool_count 绑定计数(其余场合为 0)。",
+      "properties": {
+        "id": { "type": "string", "description": "Agent 数据库 ID(字符串化的数字)" },
+        "key": {
+          "type": "string",
+          "description": "唯一 key。内置 agent: goals/planner/mainagent/worker/auto/pentest;自定义 agent 匹配 ^[a-z][a-z0-9_]*$"
+        },
+        "name": { "type": "string", "description": "显示名称" },
+        "description": { "type": "string", "description": "描述(可为空串)" },
+        "role": {
+          "type": "string",
+          "enum": ["goals", "main", "planner", "worker", "assistant"],
+          "description": "角色(数据库 CHECK 约束;自定义 agent 恒为 assistant)"
+        },
+        "builtin": { "type": "boolean", "description": "是否内置 agent(内置不可删除/改名,不支持触发器)" },
+        "enabled": { "type": "boolean", "description": "是否启用" },
+        "max_turns": { "type": "integer", "description": "单次运行最大轮次;0=不限制" },
+        "run_seconds": { "type": "integer", "description": "worker 单次运行墙钟上限(秒);0=不限制" },
+        "web_search": { "type": "boolean", "description": "是否启用网络搜索(受系统全局开关门控)" },
+        "interactive_shell": { "type": "boolean", "description": "是否启用交互式 shell(持久 PTY 会话工具族)" },
+        "llm_profile_id": {
+          "type": "integer",
+          "format": "int64",
+          "nullable": true,
+          "description": "绑定的 LLM 配置 ID;null=跟随任务/会话 pin,再回退全局激活"
+        },
+        "trigger_run_mode": {
+          "type": "string",
+          "enum": ["serial", "parallel"],
+          "description": "触发后处理策略:串行排队 / 每次触发各自并发一个会话(仅自定义 agent 有意义)"
+        },
+        "trigger_merge_mode": {
+          "type": "string",
+          "enum": ["by_task", "all", "none"],
+          "description": "仅 serial 用:同任务合并 / 全部合并 / 不合并"
+        },
+        "trigger_max_parallel": { "type": "integer", "description": "仅 parallel 用:每 agent 并发上限;0=不限(库默认 5)" },
+        "mcp_count": { "type": "integer", "description": "可见 MCP 服务器数(仅列表接口填充)" },
+        "skill_count": { "type": "integer", "description": "可见 skill 数(仅列表接口填充)" },
+        "tool_count": { "type": "integer", "description": "绑定工具数(仅列表接口填充)" }
+      },
+      "required": [
+        "id",
+        "key",
+        "name",
+        "description",
+        "role",
+        "builtin",
+        "enabled",
+        "max_turns",
+        "run_seconds",
+        "web_search",
+        "interactive_shell",
+        "llm_profile_id",
+        "trigger_run_mode",
+        "trigger_merge_mode",
+        "trigger_max_parallel",
+        "mcp_count",
+        "skill_count",
+        "tool_count"
+      ]
+    },
+    "AgentDetail": {
+      "type": "object",
+      "description": "Agent 详情(编辑器一次性拉取的全部数据)。",
+      "properties": {
+        "agent": { "$ref": "#/components/schemas/AgentItem" },
+        "prompt": { "type": "string", "description": "当前生效的提示词模板(空=未设置)" },
+        "variables": {
+          "type": "array",
+          "items": { "$ref": "#/components/schemas/AgentPromptVar" },
+          "description": "提示词变量目录(含全局运行时变量 Now/DataDir)"
+        },
+        "versions": {
+          "type": "array",
+          "items": { "$ref": "#/components/schemas/AgentPromptVersion" },
+          "description": "提示词历史版本(version 降序)"
+        },
+        "visibility": { "$ref": "#/components/schemas/AgentVisibility" },
+        "llm_profiles": {
+          "type": "array",
+          "items": { "$ref": "#/components/schemas/AgentLLMProfileOption" },
+          "description": "可绑定的 LLM 配置候选(当前绑定见 agent.llm_profile_id)"
+        },
+        "wrapup_prompt": { "type": "string", "description": "已保存的收尾提示词(空=用内置默认)" },
+        "wrapup_default": { "type": "string", "description": "内置默认收尾提示词(供占位/恢复默认)" },
+        "wrapup_max_turns": { "type": "integer", "description": "已保存的收尾轮数(0=用内置默认)" },
+        "wrapup_max_turns_default": { "type": "integer", "description": "内置默认收尾轮数" },
+        "task_timeout_wrapup_supported": { "type": "boolean", "description": "该 agent 是否支持任务级超时收尾词(仅 worker/planner 为 true)" },
+        "task_timeout_wrapup_prompt": { "type": "string", "description": "已保存的任务级超时收尾词(空=用内置默认)" },
+        "task_timeout_wrapup_default": { "type": "string", "description": "内置默认任务级超时收尾词(不支持时为空串)" },
+        "task_timeout_wrapup_max_turns": { "type": "integer", "description": "已保存的任务级超时收尾轮数(0=用内置默认)" },
+        "task_timeout_wrapup_max_turns_default": { "type": "integer", "description": "内置默认轮数" }
+      },
+      "required": [
+        "agent",
+        "prompt",
+        "variables",
+        "versions",
+        "visibility",
+        "llm_profiles",
+        "wrapup_prompt",
+        "wrapup_default",
+        "wrapup_max_turns",
+        "wrapup_max_turns_default",
+        "task_timeout_wrapup_supported",
+        "task_timeout_wrapup_prompt",
+        "task_timeout_wrapup_default",
+        "task_timeout_wrapup_max_turns",
+        "task_timeout_wrapup_max_turns_default"
+      ]
+    },
+    "AgentLLMProfileOption": {
+      "type": "object",
+      "description": "Agent 详情里的 LLM 配置候选(「默认模型」下拉)。",
+      "properties": {
+        "id": { "type": "integer", "format": "int64", "description": "LLM 配置 ID" },
+        "name": { "type": "string", "description": "配置名称" },
+        "model": { "type": "string", "description": "模型名" },
+        "is_default": { "type": "boolean", "description": "是否全局默认配置" }
+      },
+      "required": ["id", "name", "model", "is_default"]
+    },
+    "AgentPromptVar": {
+      "type": "object",
+      "description": "提示词变量目录条目(模板白名单)。",
+      "properties": {
+        "name": { "type": "string", "description": "变量名(模板中以 {{.Name}} 引用)" },
+        "description": { "type": "string", "description": "变量含义" },
+        "example": { "type": "string", "description": "示例值(预览时的默认取值)" },
+        "source": {
+          "type": "string",
+          "enum": ["exploration", "runtime", "distilled"],
+          "description": "来源:探索注入 / 运行时填充 / 蒸馏摘要"
+        }
+      },
+      "required": ["name", "description", "example", "source"]
+    },
+    "AgentPromptVersion": {
+      "type": "object",
+      "description": "提示词历史版本条目。",
+      "properties": {
+        "version": { "type": "integer", "description": "版本号(从 1 递增)" },
+        "template_text": { "type": "string", "description": "该版本的完整模板文本" },
+        "note": { "type": "string", "description": "版本备注(无备注时缺省)" },
+        "ts": { "type": "string", "format": "date-time", "description": "创建时间" }
+      },
+      "required": ["version", "template_text", "ts"]
+    },
+    "AgentVisibility": {
+      "type": "object",
+      "description": "Agent 的资源可见范围,按 kind 分组:mcp / skill。",
+      "properties": {
+        "mcp": {
+          "type": "array",
+          "items": { "type": "integer", "format": "int64" },
+          "description": "可见的 MCP 服务器 ID 列表(kind=mcp)"
+        },
+        "skill": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "可见的 skill 名列表(kind=skill)"
+        }
+      },
+      "required": ["mcp", "skill"]
+    },
+    "AgentCreateInput": {
+      "type": "object",
+      "description": "创建自定义 agent 的请求体。",
+      "properties": {
+        "key": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "description": "agent key:小写字母开头,仅小写字母/数字/下划线"
+        },
+        "name": { "type": "string", "minLength": 1, "description": "显示名称(去空格后不能为空)" },
+        "description": { "type": "string", "description": "描述(可选,空串存 NULL)" }
+      },
+      "required": ["key", "name"]
+    },
+    "AgentMetaInput": {
+      "type": "object",
+      "description": "修改 agent 名称/描述的请求体(仅自定义 agent)。",
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "description": "新名称(去空格后不能为空)" },
+        "description": { "type": "string", "description": "新描述(全量覆盖,空串=清空)" }
+      },
+      "required": ["name"]
+    },
+    "AgentConfigInput": {
+      "type": "object",
+      "description": "agent 运行配置局部补丁:全部字段可选,未提供的保持原值。",
+      "properties": {
+        "max_turns": { "type": "integer", "description": "单次运行最大轮次;负数归 0,0=不限" },
+        "run_seconds": { "type": "integer", "description": "worker 单次运行墙钟上限(秒);负数归 0,0=不限" },
+        "web_search": { "type": "boolean", "description": "是否启用网络搜索" },
+        "interactive_shell": { "type": "boolean", "description": "是否启用交互式 shell" },
+        "llm_profile_id": {
+          "type": "integer",
+          "format": "int64",
+          "nullable": true,
+          "description": "三态:缺省=不动;null=解绑(跟随任务/全局);数字=绑定该 profile(须存在,否则 400)"
+        },
+        "trigger_run_mode": {
+          "type": "string",
+          "enum": ["serial", "parallel"],
+          "description": "触发后处理策略(与 trigger_merge_mode/trigger_max_parallel 作为一组整体写入)"
+        },
+        "trigger_merge_mode": {
+          "type": "string",
+          "enum": ["by_task", "all", "none"],
+          "description": "仅 serial 用的合并策略"
+        },
+        "trigger_max_parallel": { "type": "integer", "description": "仅 parallel 用的并发上限;0=不限" }
+      }
+    },
+    "AgentConfigResult": {
+      "type": "object",
+      "description": "agent 配置保存结果。",
+      "properties": {
+        "ok": { "type": "boolean" },
+        "max_turns": { "type": "integer", "description": "本次写入的 max_turns(仅请求提供时回显)" },
+        "run_seconds": { "type": "integer", "description": "本次写入的 run_seconds(仅请求提供时回显)" }
+      },
+      "required": ["ok"]
+    },
+    "AgentPromptSaveInput": {
+      "type": "object",
+      "description": "保存提示词的请求体。",
+      "properties": {
+        "template": { "type": "string", "description": "Go text/template 模板;{{.Var}} 须在变量白名单内(空模板合法)" },
+        "note": { "type": "string", "description": "版本备注(可空)" }
+      },
+      "required": ["template"]
+    },
+    "PromptPreviewInput": {
+      "type": "object",
+      "description": "提示词预览请求体(不落库)。template 省略或为空时用当前已保存的提示词。",
+      "properties": {
+        "template": { "type": "string", "description": "待渲染模板(空=用该 agent 当前提示词)" },
+        "sample": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "description": "样例变量值(覆盖变量目录里的 example)"
+        }
+      }
+    },
+    "PromptPreviewResult": {
+      "type": "object",
+      "description": "提示词预览结果(渲染失败也返回 200)。",
+      "properties": {
+        "rendered": { "type": "string", "description": "渲染结果(失败时为空串)" },
+        "error": { "type": "string", "description": "渲染失败原因(成功时缺省)" }
+      },
+      "required": ["rendered"]
+    },
+    "AgentWrapupInput": {
+      "type": "object",
+      "description": "保存收尾提示词的请求体(per-run 收尾与任务级超时收尾共用)。",
+      "properties": {
+        "prompt": { "type": "string", "description": "收尾提示词;空串=清除覆盖、恢复内置默认" },
+        "max_turns": { "type": "integer", "description": "收尾轮数预算;省略=不动已存值,负数归 0,0=用内置默认" }
+      },
+      "required": ["prompt"]
+    },
+    "Trigger": {
+      "type": "object",
+      "description": "Agent 触发器(P3,仅自定义 agent)。六种触发条件可同时开启,各自携带独立的触发用户消息。",
+      "properties": {
+        "id": { "type": "integer", "format": "int64", "description": "触发器 ID" },
+        "agent_key": { "type": "string", "description": "所属 agent key" },
+        "enabled": { "type": "boolean", "description": "是否启用" },
+        "interval_sec": { "type": "integer", "description": "定时触发:间隔秒数;0=不定时" },
+        "on_finding": { "type": "boolean", "description": "任意任务发现 finding 时触发" },
+        "on_goal_met": { "type": "boolean", "description": "任意任务达成目标时触发" },
+        "on_task_timeout": { "type": "boolean", "description": "任意任务超时时触发" },
+        "on_tool_call": { "type": "boolean", "description": "选中工具被调用(执行完成)时触发" },
+        "on_task_create": { "type": "boolean", "description": "任意任务被创建时触发" },
+        "interval_message": { "type": "string", "description": "定时触发时的用户消息" },
+        "finding_message": { "type": "string", "description": "发现 finding 触发时的用户消息" },
+        "goal_message": { "type": "string", "description": "目标达成触发时的用户消息" },
+        "task_timeout_message": { "type": "string", "description": "任务超时触发时的用户消息" },
+        "tool_call_message": { "type": "string", "description": "工具调用触发时的用户消息" },
+        "task_create_message": { "type": "string", "description": "任务创建触发时的用户消息" },
+        "tool_names": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "on_tool_call 选中的工具 key 列表(启用该条件时至少一个)"
+        },
+        "last_fire": {
+          "type": "string",
+          "format": "date-time",
+          "nullable": true,
+          "description": "上次触发时间(从未触发时缺省)"
+        }
+      },
+      "required": [
+        "id",
+        "agent_key",
+        "enabled",
+        "interval_sec",
+        "on_finding",
+        "on_goal_met",
+        "on_task_timeout",
+        "on_tool_call",
+        "on_task_create",
+        "interval_message",
+        "finding_message",
+        "goal_message",
+        "task_timeout_message",
+        "tool_call_message",
+        "task_create_message",
+        "tool_names"
+      ]
+    },
+    "TriggerInput": {
+      "type": "object",
+      "description": "创建/更新触发器的请求体(不含 id/agent_key/last_fire)。校验:至少一种触发条件(interval_sec>0 或任一 on_* 为 true);on_tool_call=true 时 tool_names 不能为空。",
+      "properties": {
+        "enabled": { "type": "boolean", "description": "是否启用" },
+        "interval_sec": { "type": "integer", "description": "定时触发间隔秒;0=不定时,负数按 0 处理" },
+        "on_finding": { "type": "boolean", "description": "触发条件:任意任务发现 finding" },
+        "on_goal_met": { "type": "boolean", "description": "触发条件:任意任务达成目标" },
+        "on_task_timeout": { "type": "boolean", "description": "触发条件:任意任务超时" },
+        "on_tool_call": { "type": "boolean", "description": "触发条件:选中工具被调用(需配 tool_names)" },
+        "on_task_create": { "type": "boolean", "description": "触发条件:任意任务被创建" },
+        "interval_message": { "type": "string", "description": "定时触发时的用户消息" },
+        "finding_message": { "type": "string", "description": "发现 finding 触发时的用户消息" },
+        "goal_message": { "type": "string", "description": "目标达成触发时的用户消息" },
+        "task_timeout_message": { "type": "string", "description": "任务超时触发时的用户消息" },
+        "tool_call_message": { "type": "string", "description": "工具调用触发时的用户消息" },
+        "task_create_message": { "type": "string", "description": "任务创建触发时的用户消息" },
+        "tool_names": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "on_tool_call 选中的工具 key 列表"
+        }
+      }
+    },
+    "ToolItem": {
+      "type": "object",
+      "description": "工具目录条目(内置 system 工具 + 自定义工具)。key 与执行逻辑在代码中,行上仅存页面可编辑字段。",
+      "properties": {
+        "key": { "type": "string", "description": "工具 key(自定义工具匹配 ^[a-z][a-z0-9_]*$)" },
+        "system": { "type": "boolean", "description": "是否内置(system)工具;自定义工具为 false" },
+        "description": { "type": "string", "description": "模型可见的工具描述" },
+        "schema": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "参数 JSON Schema(对象含 properties);自定义工具可空对象(自动降级 {args:string} 薄壳)"
+        },
+        "agents": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "绑定的 agent key 列表(空=无 agent 可用)"
+        },
+        "enabled": { "type": "boolean", "description": "是否启用" },
+        "kind": {
+          "type": "string",
+          "enum": ["builtin", "command", "script", "http", "shell"],
+          "description": "工具类型:内置 / 命令 / Python 脚本 / HTTP / shell 环境声明(不可直接调用)"
+        },
+        "exec": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "自定义工具执行规格(kind!=builtin 时有意义):command={command,timeout_ms};script={code,timeout_ms};http={method,url,headers,body,timeout_ms,proxy,use_recording_proxy};默认空对象"
+        },
+        "deferred": { "type": "boolean", "description": "schema 延迟加载(经 SearchExtraTools/ExecuteExtraTool)" },
+        "calls": { "type": "integer", "description": "累计调用次数(列表接口尽力填充;读失败为 0)" }
+      },
+      "required": ["key", "system", "description", "schema", "agents", "enabled", "kind", "exec", "deferred", "calls"]
+    },
+    "ToolUpdateInput": {
+      "type": "object",
+      "description": "保存内置工具配置的请求体(四字段全量覆盖,省略会置零值)。",
+      "properties": {
+        "description": { "type": "string", "description": "工具描述" },
+        "schema": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "参数 JSON Schema(结构应保持不变,仅参数级 description/default 可动)"
+        },
+        "agents": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "绑定的 agent key 列表"
+        },
+        "enabled": { "type": "boolean", "description": "是否启用" }
+      },
+      "required": ["description", "schema", "agents", "enabled"]
+    },
+    "CustomToolCreateInput": {
+      "type": "object",
+      "description": "创建自定义工具的请求体。key 需匹配 ^[a-z][a-z0-9_]*$ 且不得与现有工具冲突;kind=http 必须提供含 properties 的 schema。",
+      "properties": {
+        "key": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "description": "工具 key:小写字母开头,仅小写字母/数字/下划线"
+        },
+        "description": { "type": "string", "description": "工具描述" },
+        "schema": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "参数 JSON Schema;command/script 可空(自动 {args:string}),http 必须含 properties"
+        },
+        "agents": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "绑定的 agent key 列表"
+        },
+        "enabled": { "type": "boolean", "description": "是否启用" },
+        "kind": {
+          "type": "string",
+          "enum": ["command", "script", "http", "shell"],
+          "description": "执行方式:命令 / Python 脚本 / HTTP / shell 环境声明"
+        },
+        "exec": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "执行规格:command={command,timeout_ms};script={code,timeout_ms};http={method,url,headers,body,timeout_ms,proxy,use_recording_proxy}"
+        },
+        "deferred": { "type": "boolean", "description": "schema 延迟加载" }
+      },
+      "required": ["key", "kind"]
+    },
+    "CustomToolUpdateInput": {
+      "type": "object",
+      "description": "更新自定义工具的请求体(key 取路径参数,请求体中的 key 被忽略)。",
+      "properties": {
+        "key": { "type": "string", "description": "被忽略(以路径 key 为准)" },
+        "description": { "type": "string", "description": "工具描述" },
+        "schema": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "参数 JSON Schema(http 必须含 properties)"
+        },
+        "agents": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "绑定的 agent key 列表"
+        },
+        "enabled": { "type": "boolean", "description": "是否启用" },
+        "kind": {
+          "type": "string",
+          "enum": ["command", "script", "http", "shell"],
+          "description": "执行方式"
+        },
+        "exec": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "执行规格(结构同创建)"
+        },
+        "deferred": { "type": "boolean", "description": "schema 延迟加载" }
+      },
+      "required": ["kind"]
+    },
+    "CustomToolTestInput": {
+      "type": "object",
+      "description": "自定义工具干跑请求体(不落库)。",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["command", "script", "http"],
+          "description": "执行方式(shell 无可执行内容,返回 400)"
+        },
+        "exec": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "执行规格:command={command,timeout_ms};script={code,timeout_ms};http={method,url,headers,body,timeout_ms,proxy,use_recording_proxy}"
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "样例参数(缺省空对象;标量会渲染进 {name} 占位并镜像为 TOOL_<NAME> 环境变量)"
+        }
+      },
+      "required": ["kind", "exec"]
+    },
+    "CustomToolTestResult": {
+      "type": "object",
+      "description": "自定义工具干跑结果(执行出错也返回 200)。",
+      "properties": {
+        "output": { "type": "string", "description": "原始输出(command/script 为合并 stdout+stderr;http 为 JSON {status,body})" },
+        "is_error": { "type": "boolean", "description": "是否执行出错" }
+      },
+      "required": ["output", "is_error"]
+    },
+    "MCPServer": {
+      "type": "object",
+      "description": "MCP 服务器配置(tools 为发现后缓存的工具名,仅读取时返回)。",
+      "properties": {
+        "id": { "type": "integer", "format": "int64", "description": "服务器 ID" },
+        "name": { "type": "string", "description": "名称(唯一)" },
+        "transport": {
+          "type": "string",
+          "enum": ["stdio", "http", "sse"],
+          "description": "传输方式(数据库 CHECK 约束)"
+        },
+        "command": { "type": "string", "description": "stdio:启动命令(其余传输缺省)" },
+        "args": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "stdio:命令参数(默认 [])"
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "description": "环境变量(默认 {})"
+        },
+        "url": { "type": "string", "description": "http/sse:服务地址(其余传输缺省)" },
+        "enabled": { "type": "boolean", "description": "是否启用" },
+        "insecure": { "type": "boolean", "description": "http:跳过 TLS 证书校验(自签名服务器)" },
+        "tools": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "已缓存的工具名列表(做过发现才有;读取时尽力填充)"
+        }
+      },
+      "required": ["id", "name", "transport", "args", "env", "enabled", "insecure"]
+    },
+    "MCPServerInput": {
+      "type": "object",
+      "description": "新增/更新 MCP 服务器的请求体。id=0(或缺省)新增(且 enabled=true 时自动发现工具);id 非 0 整体更新。tools 字段不落库、提交时忽略。",
+      "properties": {
+        "id": { "type": "integer", "format": "int64", "description": "0=新增;非 0=更新该行" },
+        "name": { "type": "string", "description": "名称(唯一)" },
+        "transport": {
+          "type": "string",
+          "enum": ["stdio", "http", "sse"],
+          "description": "传输方式"
+        },
+        "command": { "type": "string", "description": "stdio:启动命令" },
+        "args": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "stdio:命令参数(缺省按 [] 存)"
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "description": "环境变量(缺省按 {} 存)"
+        },
+        "url": { "type": "string", "description": "http/sse:服务地址" },
+        "enabled": { "type": "boolean", "description": "是否启用" },
+        "insecure": { "type": "boolean", "description": "http:跳过 TLS 证书校验" },
+        "tools": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "忽略(工具清单由发现过程维护)"
+        }
+      },
+      "required": ["name", "transport"]
+    },
+    "MCPTool": {
+      "type": "object",
+      "description": "MCP 服务器的缓存工具条目。",
+      "properties": {
+        "name": { "type": "string", "description": "工具名" },
+        "description": { "type": "string", "description": "工具描述(可为空串)" }
+      },
+      "required": ["name", "description"]
+    }
+  }
+}

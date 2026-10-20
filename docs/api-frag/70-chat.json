@@ -1,0 +1,2228 @@
+{
+  "paths": {
+    "/api/chat": {
+      "post": {
+        "tags": ["chat"],
+        "summary": "向任务主 Agent 发送消息",
+        "description": "向指定任务的主 Agent(编排会话)发送一条用户消息。这不是 SSE 接口:LLM 可用时立即返回 202,消息交给后台 goroutine 执行(可运行数分钟的多工具循环),过程步骤(thinking/tool_use/tool_result/text/result)以 worker=mainagent 流入任务活动流,前端通过任务活动 SSE(GET /api/exploration/activity/stream)实时观看,最终答案是一条 kind=result 的活动;LLM 不可用时同步执行规则模式并直接返回 200(态势摘要,支持「意图 ...」/「提示 ...」指令)。任务暂停(paused)不会拦截该对话。同一任务同时只允许一条在途消息(409)。消息里的 @[(漏洞|资产|企业|接口|IP|应用|域名|子域名|服务)#ID 标签]会在服务端展开为所引用记录的 JSON 快照,单条消息最多引用 10 条,引用记录不存在时整条请求被拒绝。",
+        "operationId": "sendTaskChat",
+        "parameters": [
+          {
+            "name": "task",
+            "in": "query",
+            "required": true,
+            "description": "目标任务 ID(数字字符串)",
+            "schema": {"type": "string"}
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/ChatTurnRequest"}
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "规则模式(LLM 未配置):同步返回回复",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/ChatRuleReply"}
+              }
+            }
+          },
+          "202": {
+            "description": "LLM 模式:请求已受理,回合在后台执行,过程与结果经任务活动流(SSE)返回",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/ChatTurnAccepted"}
+              }
+            }
+          },
+          "400": {
+            "description": "请求体不是合法 JSON,或消息中的引用(@[..#ID])格式/记录无效",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "404": {
+            "description": "task 参数指定的任务不存在或未激活",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "409": {
+            "description": "任务正在删除,或主 Agent 正在处理上一条消息",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      }
+    },
+    "/api/chat/upload": {
+      "post": {
+        "tags": ["chat"],
+        "summary": "上传聊天附件",
+        "description": "把一个或多个文件上传到聊天的工作目录 uploads/ 子目录下,使 Agent 能用现有的 Read/Bash 工具直接打开(无多模态)。同名文件自动追加 -1/-2... 后缀避免覆盖。scope=task 落到 <workDir>/tasks/<id>/uploads/;scope=session 落到 <workDir>/sessions/<id>/uploads/(会话 id 形如 conv-<数字>);scope=staging 落到 <workDir>/drafts/<id>/uploads/(建任务前暂存,任务尚无 ID)。id 只允许字母数字/下划线/连字符。单次请求体上限 128 MiB,内存缓冲 32 MiB 后落盘。scope=task 时任务不存在返回 404,任务正在删除返回 409。",
+        "operationId": "uploadChatFile",
+        "parameters": [
+          {
+            "name": "scope",
+            "in": "query",
+            "required": true,
+            "description": "上传目标范围",
+            "schema": {"type": "string", "enum": ["task", "session", "staging"]}
+          },
+          {
+            "name": "id",
+            "in": "query",
+            "required": true,
+            "description": "目标 ID:scope=task 时为任务数字 ID;scope=session 时为会话 session ID(如 conv-12);scope=staging 时为前端自拟的草稿 ID。仅允许 [A-Za-z0-9_-]",
+            "schema": {"type": "string"}
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "multipart 表单,字段名 file,可重复出现(一次传多个文件)。单次请求总大小上限 128 MiB",
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": ["file"],
+                "properties": {
+                  "file": {
+                    "type": "array",
+                    "description": "上传的文件(可重复字段)",
+                    "items": {"type": "string", "format": "binary"}
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "上传成功,返回附件清单",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["attachments"],
+                  "properties": {
+                    "attachments": {
+                      "type": "array",
+                      "items": {"$ref": "#/components/schemas/ChatAttachment"}
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "scope 无效、id 非法、缺少 file 字段、解析失败或超出大小限制",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "404": {
+            "description": "scope=task 时任务不存在",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "409": {
+            "description": "scope=task 时任务正在删除,无法上传附件",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "500": {
+            "description": "创建目录或保存文件失败",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      }
+    },
+    "/api/chat/mentions": {
+      "get": {
+        "tags": ["chat"],
+        "summary": "搜索聊天可引用的记录",
+        "description": "在共享目录(漏洞 findings / 企业 companies / 资产 assets)里搜索聊天输入框 @ 引用候选。q 为空时按 id 倒序列出最新记录;q 非空时做大小写不敏感的 ILIKE 模糊匹配(同时支持精确匹配数字 ID);kind 限定只搜某类。每页固定 20 条,超出时返回 next_cursor(以最后一条的稳定排序键编码),把它作为 cursor 传入取下一页;cursor 与 kind/q 必须与首次请求一致否则 400。搜索关键词最多 200 字。",
+        "operationId": "searchChatMentions",
+        "parameters": [
+          {
+            "name": "kind",
+            "in": "query",
+            "required": false,
+            "description": "限定引用类型;缺省=全部类型",
+            "schema": {
+              "type": "string",
+              "enum": ["finding", "company", "asset", "endpoint", "ip", "app", "root_domain", "subdomain", "service"]
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "description": "搜索关键词(≤200 字);也支持精确匹配记录数字 ID;缺省=按最新列出",
+            "schema": {"type": "string", "maxLength": 200}
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "description": "分页游标,取上一页响应的 next_cursor;必须与同 kind/q 搭配",
+            "schema": {"type": "string"}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "搜索结果页",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/ChatMentionPage"}
+              }
+            }
+          },
+          "400": {
+            "description": "kind 无效、关键词超过 200 字或 cursor 无效",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "500": {
+            "description": "数据库查询失败",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      }
+    },
+    "/api/conversations": {
+      "get": {
+        "tags": ["conversations"],
+        "summary": "列出聊天会话",
+        "description": "列出全部独立聊天会话(ChatGPT 式对话线程,与渗透任务图无关)。排序:置顶优先,然后按 updated_at 倒序。每项在会话字段之上附加 running 布尔值,表示该会话是否有一轮 Agent 回合正在后台执行(前端据此显示运行状态)。无过滤参数。",
+        "operationId": "listConversations",
+        "responses": {
+          "200": {
+            "description": "会话列表",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["conversations"],
+                  "properties": {
+                    "conversations": {
+                      "type": "array",
+                      "items": {"$ref": "#/components/schemas/ConversationListItem"}
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "数据库查询失败",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      },
+      "post": {
+        "tags": ["conversations"],
+        "summary": "创建聊天会话",
+        "description": "为指定 agent_key 开一个新会话线程。title 缺省或为空时使用「新对话」,超过 200 字返回 400;agent_key 必须是已存在的 agent(404),最多 120 字符。llm_profile_id 可选:指定该会话固定使用的 LLM 配置(必须存在且已设置 API Key,否则 400);null/缺省=跟随 agent 绑定或全局配置。请求体上限 64 KiB。",
+        "operationId": "createConversation",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/ConversationCreateRequest"}
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "创建成功,返回新会话",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Conversation"}
+              }
+            }
+          },
+          "400": {
+            "description": "agent_key 为空/超长、标题超长、指定的 LLM 配置不存在或未设置 API Key、请求体非法",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "404": {
+            "description": "agent 不存在",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "413": {
+            "description": "请求正文过大(超过 64 KiB)",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "500": {
+            "description": "数据库错误",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      }
+    },
+    "/api/conversations/delete/batch": {
+      "post": {
+        "tags": ["conversations"],
+        "summary": "批量删除会话",
+        "description": "一条数据库语句批量删除 1-100 个(去重后)会话,同时取消每个会话正在执行的 Agent 回合与旁路问答。不存在的 id 不报错,而是按条目返回 ok=false 与 error 说明,避免过期列表掩盖实际删除结果。重复 id 自动去重;id 非正数返回 400。请求体上限 64 KiB。",
+        "operationId": "deleteConversationsBatch",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/ConversationDeleteBatchRequest"}
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "批量删除结果(逐条)",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/ConversationDeleteBatchResponse"}
+              }
+            }
+          },
+          "400": {
+            "description": "ids 数量不在 1-100 范围、存在非正数 id 或请求体非法",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "413": {
+            "description": "请求正文过大(超过 64 KiB)",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "500": {
+            "description": "数据库删除失败",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      }
+    },
+    "/api/conversations/{id}": {
+      "patch": {
+        "tags": ["conversations"],
+        "summary": "重命名/置顶会话",
+        "description": "修改会话标题或置顶状态,title 与 pinned 至少提供一个(否则 400)。title 会去除首尾空白且不能为空,最多 200 字。返回更新后的会话。请求体上限 64 KiB。",
+        "operationId": "renameConversation",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "会话 ID",
+            "schema": {"type": "integer", "format": "int64"}
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/ConversationRenameRequest"}
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "更新成功,返回更新后的会话",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/Conversation"}
+              }
+            }
+          },
+          "400": {
+            "description": "id 非数字、title 与 pinned 均缺省、标题为空或超长",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "404": {
+            "description": "会话不存在",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "413": {
+            "description": "请求正文过大(超过 64 KiB)",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "500": {
+            "description": "数据库错误",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      },
+      "delete": {
+        "tags": ["conversations"],
+        "summary": "删除会话",
+        "description": "删除单个会话及其活动记录。删除前先取消该会话正在执行的 Agent 回合与全部旁路问答请求,再执行数据库删除。",
+        "operationId": "deleteConversation",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "会话 ID",
+            "schema": {"type": "integer", "format": "int64"}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "删除成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["deleted"],
+                  "properties": {
+                    "deleted": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "被删除的会话 ID"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "id 非数字",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "404": {
+            "description": "会话不存在",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "500": {
+            "description": "数据库删除失败",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      }
+    },
+    "/api/conversations/{id}/profile": {
+      "patch": {
+        "tags": ["conversations"],
+        "summary": "设置会话 LLM 配置",
+        "description": "设置或清除该会话固定使用的 LLM 配置。llm_profile_id 传数字=绑定该配置(必须存在且已设置 API Key,否则 400);传 null 或缺省=清除绑定,回退到 agent 自身绑定→全局激活配置的解析顺序。请求体上限 64 KiB。",
+        "operationId": "updateConversationProfile",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "会话 ID",
+            "schema": {"type": "integer", "format": "int64"}
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/ConversationProfileRequest"}
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "更新成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["ok"],
+                  "properties": {"ok": {"type": "boolean"}}
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "id 非数字或指定的 LLM 配置不存在/未设置 API Key",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "404": {
+            "description": "会话不存在",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "413": {
+            "description": "请求正文过大(超过 64 KiB)",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "500": {
+            "description": "数据库错误",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      }
+    },
+    "/api/conversations/{id}/messages": {
+      "get": {
+        "tags": ["conversations"],
+        "summary": "获取会话消息(活动流)",
+        "description": "读取会话的步骤/消息流(与任务活动流同构,前端转录渲染器复用)。两种分页模式:\n(1) 增量模式:传 since=N,返回 id 大于 N 的正向(ASC)记录,用于发送后轮询与实时追更;内部取数上限为 max(limit,1000) 保证突发不丢,此时 hasMore 恒为 false。\n(2) 历史模式(缺省):不传 since,返回最新一页;传 before=N 返回 id 小于 N 的更早一页,hasMore 指示是否还有更早历史。limit 控制页大小(缺省 200)。\ncursor 为下一页游标;running 表示该会话是否有一轮回合正在执行(前端据此决定继续轮询)。列表项的 detail 字段为空(懒加载),需要时用 GET /api/conversations/{id}/messages/{seq} 取。",
+        "operationId": "listConversationMessages",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "会话 ID",
+            "schema": {"type": "integer", "format": "int64"}
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "页大小,缺省 200",
+            "schema": {"type": "integer", "default": 200, "minimum": 1}
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "required": false,
+            "description": "增量游标:返回 id 大于该值的活动(正向)。提供时进入增量模式",
+            "schema": {"type": "integer", "format": "int64", "default": 0}
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "required": false,
+            "description": "历史分页游标:返回 id 小于该值的更早活动;0/缺省=最新一页",
+            "schema": {"type": "integer", "format": "int64", "default": 0}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "会话活动页",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/ConversationMessagesResponse"}
+              }
+            }
+          },
+          "400": {
+            "description": "id 非数字",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "404": {
+            "description": "会话不存在",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "500": {
+            "description": "数据库查询失败",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      },
+      "post": {
+        "tags": ["conversations"],
+        "summary": "发送会话消息",
+        "description": "持久化用户消息并异步执行一轮 Agent 回合。这不是 SSE 接口:立即返回 202,步骤写入 conversation_activities 表,前端轮询 GET /api/conversations/{id}/messages?since=<cursor> 获取实时更新。同一会话同时只允许一条在途消息(409)。message 与 attachments 至少一项非空。消息中的 @[(类型#ID) 标签]会被服务端展开为引用记录快照(单条最多 10 条)。首条消息会自动截取第一行作为会话标题(覆盖「新对话」)。附件是 chat/upload 上传的文件(路径相对会话工作目录),后端会把绝对路径清单拼进发给 Agent 的消息。会话绑定的 agent/LLM 不可用时返回 503。",
+        "operationId": "sendConversationMessage",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "会话 ID",
+            "schema": {"type": "integer", "format": "int64"}
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/ConversationMessageRequest"}
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "消息已受理,回合在后台执行,结果经消息轮询接口返回",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["status"],
+                  "properties": {"status": {"type": "string", "enum": ["accepted"]}}
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求体非法、消息为空(无文本且无附件)或消息中的引用无效",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "404": {
+            "description": "会话不存在",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "409": {
+            "description": "该会话正在处理上一条消息",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "500": {
+            "description": "数据库错误",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "503": {
+            "description": "会话的 Agent/LLM 配置不可用(未配置 LLM)",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      }
+    },
+    "/api/conversations/{id}/stop": {
+      "post": {
+        "tags": ["conversations"],
+        "summary": "停止会话当前回合",
+        "description": "手动停止该会话正在执行的一轮 Agent 回合(聊天界面的运行/停止按钮)。只取消本会话的当前回合,不影响 P3 触发队列(该 agent 下一次排队触发仍会启动)。没有正在执行的回合时返回 status=idle,否则发出取消信号并返回 status=stopping;Agent 会补一条「已手动停止」步骤。",
+        "operationId": "stopConversation",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "会话 ID",
+            "schema": {"type": "integer", "format": "int64"}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "停止请求已处理",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["status"],
+                  "properties": {
+                    "status": {"type": "string", "enum": ["idle", "stopping"]}
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "id 非数字",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "404": {
+            "description": "会话不存在",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "500": {
+            "description": "数据库错误",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      }
+    },
+    "/api/conversations/{id}/messages/{seq}": {
+      "get": {
+        "tags": ["conversations"],
+        "summary": "获取单条消息详情",
+        "description": "懒加载一条活动的完整 detail 字段(列表接口不返回 detail 以减小载荷)。seq 是活动 ID(列表项的 seq 字段)。活动不存在时返回空字符串(仍为 200),会话不存在返回 404。",
+        "operationId": "getConversationMessageDetail",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "会话 ID",
+            "schema": {"type": "integer", "format": "int64"}
+          },
+          {
+            "name": "seq",
+            "in": "path",
+            "required": true,
+            "description": "活动 ID(消息 seq)",
+            "schema": {"type": "integer", "format": "int64"}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "活动详情(detail 为完整文本或用户消息的 {text,attachments} JSON)",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/ConversationMessageDetailResponse"}
+              }
+            }
+          },
+          "400": {
+            "description": "id 或 seq 非数字",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "404": {
+            "description": "会话不存在",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "500": {
+            "description": "数据库查询失败",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      }
+    },
+    "/api/conversations/{id}/side-questions": {
+      "get": {
+        "tags": ["side-questions"],
+        "summary": "列出会话旁路问答历史",
+        "description": "读取该会话的旁路问答(by-the-way)历史:items 按 ordinal 倒序(最新在前)返回最多 20 条;current 为当前正在运行的请求(无则 null);next_cursor 非零时表示还有更早历史(把它作为 before 再取);snapshot 是主 Agent 上下文快照的元数据(captured_at/model/available/reason),null 表示尚未产生快照。available=false 时 reason 说明模型配置已删除或变化等不可用原因。",
+        "operationId": "listConversationSideQuestions",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "会话 ID",
+            "schema": {"type": "integer", "format": "int64"}
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "required": false,
+            "description": "历史分页游标:只返回 ordinal 小于该值的记录;0/缺省=最新一页",
+            "schema": {"type": "integer", "format": "int64", "default": 0}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "旁路问答历史页",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/SideQuestionHistoryResponse"}
+              }
+            }
+          },
+          "400": {
+            "description": "id 非数字",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "404": {
+            "description": "会话不存在",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "500": {
+            "description": "数据库查询失败",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "503": {
+            "description": "旁路服务或管理后台数据源不可用",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      },
+      "post": {
+        "tags": ["side-questions"],
+        "summary": "向会话发起旁路提问",
+        "description": "基于该会话已捕获的主 Agent 上下文快照,用独立的小模型后台回答一个「顺便问一下」的问题(不影响主对话)。question 需 1-4000 字符并携带 client_request_id(幂等键:同一 ID 重复提交同一问题返回已有请求;同一 ID 换问题返回 409)。前提:已存在上下文快照(否则 409,请先运行主 Agent)、快照模型可用(否则 409)、该会话无运行中的旁路请求(否则 409)。全局并发上限 4 个(超出 429),单个请求最长 120 秒。回答进度经 SSE(GET /api/side-questions/{requestID}/events)实时推送。请求体上限 32 KiB。",
+        "operationId": "askConversationSideQuestion",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "会话 ID",
+            "schema": {"type": "integer", "format": "int64"}
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/SideQuestionAskRequest"}
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "幂等重放:该 client_request_id 已存在,直接返回已有请求(不再新建)",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/SideQuestion"}
+              }
+            }
+          },
+          "202": {
+            "description": "已受理,后台开始生成回答(进度经 SSE 推送)",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/SideQuestion"}
+              }
+            }
+          },
+          "400": {
+            "description": "请求体非法、问题为空/超长或 client_request_id 无效",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "404": {
+            "description": "会话不存在",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "409": {
+            "description": "尚无上下文快照、模型配置已删除或变化、已有运行中的旁路请求、同一 client_request_id 换了问题或任务正在归档/删除",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "429": {
+            "description": "旁路请求已达全局并发上限(4),请稍后重试",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "500": {
+            "description": "数据库错误",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "503": {
+            "description": "旁路服务或管理后台数据源不可用",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      },
+      "delete": {
+        "tags": ["side-questions"],
+        "summary": "取消并清空会话旁路问答",
+        "description": "取消该会话所有正在运行的旁路请求,并清空其全部旁路问答历史(提问与回答不可恢复,后续提问从全新会话开始,历史摘要记忆一并重置)。",
+        "operationId": "clearConversationSideQuestions",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "会话 ID",
+            "schema": {"type": "integer", "format": "int64"}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "已取消并清空",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["cleared"],
+                  "properties": {"cleared": {"type": "boolean"}}
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "id 非数字",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "404": {
+            "description": "会话不存在",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "500": {
+            "description": "清空历史失败",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "503": {
+            "description": "旁路服务或管理后台数据源不可用",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      }
+    },
+    "/api/tasks/{id}/chat/side-questions": {
+      "get": {
+        "tags": ["side-questions"],
+        "summary": "列出任务主对话旁路问答历史",
+        "description": "读取任务主 Agent 对话(编排会话)的旁路问答历史,结构与会话侧相同:items(最多 20 条,ordinal 倒序)、current(运行中请求)、next_cursor、snapshot(快照元数据)。任务必须存在且未归档/删除中(否则 404/409)。",
+        "operationId": "listTaskSideQuestions",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "任务 ID(数字)",
+            "schema": {"type": "integer", "format": "int64"}
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "required": false,
+            "description": "历史分页游标:只返回 ordinal 小于该值的记录;0/缺省=最新一页",
+            "schema": {"type": "integer", "format": "int64", "default": 0}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "旁路问答历史页",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/SideQuestionHistoryResponse"}
+              }
+            }
+          },
+          "400": {
+            "description": "id 非数字",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "404": {
+            "description": "任务不存在",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "409": {
+            "description": "任务已归档或正在删除",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "500": {
+            "description": "数据库查询失败",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "503": {
+            "description": "旁路服务或管理后台数据源不可用",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      },
+      "post": {
+        "tags": ["side-questions"],
+        "summary": "向任务主对话发起旁路提问",
+        "description": "基于该任务主 Agent 已捕获的上下文快照发起旁路提问(独立小模型后台回答,不打断主对话)。幂等键 client_request_id;需已存在快照、模型可用、无运行中的旁路请求;全局并发上限 4(429),单请求 120 秒超时。任务正在归档/删除时 409。回答进度经 SSE 推送。请求体上限 32 KiB。",
+        "operationId": "askTaskSideQuestion",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "任务 ID(数字)",
+            "schema": {"type": "integer", "format": "int64"}
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/SideQuestionAskRequest"}
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "幂等重放:该 client_request_id 已存在,直接返回已有请求(不再新建)",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/SideQuestion"}
+              }
+            }
+          },
+          "202": {
+            "description": "已受理,后台开始生成回答(进度经 SSE 推送)",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/SideQuestion"}
+              }
+            }
+          },
+          "400": {
+            "description": "请求体非法、问题为空/超长或 client_request_id 无效",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "404": {
+            "description": "任务不存在",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "409": {
+            "description": "任务正在归档/删除、尚无上下文快照、模型配置已删除或变化、已有运行中的旁路请求或同一 client_request_id 换了问题",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "429": {
+            "description": "旁路请求已达全局并发上限(4),请稍后重试",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "500": {
+            "description": "数据库错误",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "503": {
+            "description": "旁路服务或管理后台数据源不可用",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      },
+      "delete": {
+        "tags": ["side-questions"],
+        "summary": "取消并清空任务主对话旁路问答",
+        "description": "取消该任务主对话所有正在运行的旁路请求并清空其全部旁路问答历史(含历史摘要记忆)。",
+        "operationId": "clearTaskSideQuestions",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "任务 ID(数字)",
+            "schema": {"type": "integer", "format": "int64"}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "已取消并清空",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["cleared"],
+                  "properties": {"cleared": {"type": "boolean"}}
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "id 非数字",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "404": {
+            "description": "任务不存在",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "409": {
+            "description": "任务已归档或正在删除",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "500": {
+            "description": "清空历史失败",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "503": {
+            "description": "旁路服务或管理后台数据源不可用",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      }
+    },
+    "/api/tasks/{id}/intents/{iid}/side-questions": {
+      "get": {
+        "tags": ["side-questions"],
+        "summary": "列出 Worker 意图旁路问答历史",
+        "description": "读取某个 Worker(意图节点)的旁路问答历史,结构与会话侧相同:items(最多 20 条,ordinal 倒序)、current、next_cursor、snapshot。iid 必须是该任务下类型为 intent 的节点;Worker 已删除(state=stopped)时返回 409。",
+        "operationId": "listIntentSideQuestions",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "任务 ID(数字)",
+            "schema": {"type": "integer", "format": "int64"}
+          },
+          {
+            "name": "iid",
+            "in": "path",
+            "required": true,
+            "description": "意图节点 ID(Worker)",
+            "schema": {"type": "integer", "format": "int64"}
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "required": false,
+            "description": "历史分页游标:只返回 ordinal 小于该值的记录;0/缺省=最新一页",
+            "schema": {"type": "integer", "format": "int64", "default": 0}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "旁路问答历史页",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/SideQuestionHistoryResponse"}
+              }
+            }
+          },
+          "400": {
+            "description": "id 或 iid 非数字",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "404": {
+            "description": "任务不存在或意图不存在",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "409": {
+            "description": "任务已归档或正在删除、Worker 已删除",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "500": {
+            "description": "数据库查询失败",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "503": {
+            "description": "旁路服务或管理后台数据源不可用",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      },
+      "post": {
+        "tags": ["side-questions"],
+        "summary": "向 Worker 意图发起旁路提问",
+        "description": "基于该 Worker(意图节点)已捕获的上下文快照发起旁路提问(独立小模型后台回答,不打断 Worker)。幂等键 client_request_id;需已存在快照、模型可用、无运行中的旁路请求;全局并发上限 4(429),单请求 120 秒超时。任务归档/删除中或 Worker 已删除时 409。回答进度经 SSE 推送。请求体上限 32 KiB。",
+        "operationId": "askIntentSideQuestion",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "任务 ID(数字)",
+            "schema": {"type": "integer", "format": "int64"}
+          },
+          {
+            "name": "iid",
+            "in": "path",
+            "required": true,
+            "description": "意图节点 ID(Worker)",
+            "schema": {"type": "integer", "format": "int64"}
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/SideQuestionAskRequest"}
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "幂等重放:该 client_request_id 已存在,直接返回已有请求(不再新建)",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/SideQuestion"}
+              }
+            }
+          },
+          "202": {
+            "description": "已受理,后台开始生成回答(进度经 SSE 推送)",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/SideQuestion"}
+              }
+            }
+          },
+          "400": {
+            "description": "请求体非法、问题为空/超长或 client_request_id 无效",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "404": {
+            "description": "任务不存在或意图不存在",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "409": {
+            "description": "任务正在归档/删除、Worker 已删除、尚无上下文快照、模型配置已删除或变化、已有运行中的旁路请求或同一 client_request_id 换了问题",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "429": {
+            "description": "旁路请求已达全局并发上限(4),请稍后重试",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "500": {
+            "description": "数据库错误",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "503": {
+            "description": "旁路服务或管理后台数据源不可用",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      },
+      "delete": {
+        "tags": ["side-questions"],
+        "summary": "取消并清空 Worker 意图旁路问答",
+        "description": "取消该 Worker(意图节点)所有正在运行的旁路请求并清空其全部旁路问答历史(含历史摘要记忆)。",
+        "operationId": "clearIntentSideQuestions",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "任务 ID(数字)",
+            "schema": {"type": "integer", "format": "int64"}
+          },
+          {
+            "name": "iid",
+            "in": "path",
+            "required": true,
+            "description": "意图节点 ID(Worker)",
+            "schema": {"type": "integer", "format": "int64"}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "已取消并清空",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["cleared"],
+                  "properties": {"cleared": {"type": "boolean"}}
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "id 或 iid 非数字",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "404": {
+            "description": "任务不存在或意图不存在",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "409": {
+            "description": "任务已归档或正在删除、Worker 已删除",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "500": {
+            "description": "清空历史失败",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "503": {
+            "description": "旁路服务或管理后台数据源不可用",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      }
+    },
+    "/api/side-questions/{requestID}/events": {
+      "get": {
+        "tags": ["side-questions"],
+        "summary": "订阅旁路问答进度(SSE)",
+        "description": "以 SSE(text/event-stream)实时推送一个旁路问答请求的进度。事件格式:\n- `id: <sequence>` + `event: snapshot` + `data: <SideQuestion 完整 JSON>`(见 #/components/schemas/SideQuestion):服务端每 250ms 轮询一次数据库,sequence 增大时才推送;answer 部分答案、context.phase 阶段(preparing/summarizing_history/compressing_snapshot/retrying/answering)、usage、status 均随进度更新;\n- `event: cleared` + `data: {}`:历史已被清空,流随后结束;\n- 注释行 `: keepalive`:每 15 秒一次心跳。\n请求进入终态(completed/failed/cancelled)或客户端断开后流结束。EventSource 无法携带 Authorization 头,鉴权可用 ?token= 查询参数传 JWT。",
+        "operationId": "streamSideQuestionEvents",
+        "parameters": [
+          {
+            "name": "requestID",
+            "in": "path",
+            "required": true,
+            "description": "旁路问答请求 ID(UUID,创建请求返回的 id)",
+            "schema": {"type": "string", "format": "uuid"}
+          },
+          {
+            "name": "token",
+            "in": "query",
+            "required": false,
+            "description": "JWT(用于 SSE/EventSource 等无法设置 Authorization 头的客户端)",
+            "schema": {"type": "string"}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "text/event-stream 事件流:snapshot 事件的 data 为 SideQuestion JSON(字段同 #/components/schemas/SideQuestion),cleared 事件 data 为 {}",
+            "content": {
+              "text/event-stream": {
+                "schema": {"type": "string"}
+              }
+            }
+          },
+          "404": {
+            "description": "旁路问答请求不存在",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "500": {
+            "description": "数据库读取失败或当前环境不支持流式响应",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      }
+    },
+    "/api/side-questions/{requestID}/cancel": {
+      "post": {
+        "tags": ["side-questions"],
+        "summary": "取消旁路问答请求",
+        "description": "取消一个正在运行的旁路问答请求:向运行中的生成过程发出取消信号,请求状态转为 cancelled,已生成的部分答案保留。请求不存在返回 404。",
+        "operationId": "cancelSideQuestion",
+        "parameters": [
+          {
+            "name": "requestID",
+            "in": "path",
+            "required": true,
+            "description": "旁路问答请求 ID(UUID)",
+            "schema": {"type": "string", "format": "uuid"}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "已发出取消信号",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["cancelled"],
+                  "properties": {"cancelled": {"type": "boolean"}}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "旁路问答请求不存在",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "500": {
+            "description": "数据库读取失败",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      }
+    },
+    "/api/notify/meta": {
+      "get": {
+        "tags": ["notify"],
+        "summary": "获取通知设置元数据",
+        "description": "一次请求拿全通知页所需的静态元数据与全局设置:支持的渠道类型(kind、默认限流值、凭据字段名列表 secret_keys)、全局开关 enabled、外部回链地址 public_base_url、汇总周期 digest_interval_min(字符串,空=未设置;默认值见 defaults.digest_interval_min)以及投递健康度统计 stats。",
+        "operationId": "getNotifyMeta",
+        "responses": {
+          "200": {
+            "description": "通知元数据与全局设置",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/NotifyMetaResponse"}
+              }
+            }
+          },
+          "500": {
+            "description": "统计快照查询失败",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      }
+    },
+    "/api/notify/channels": {
+      "get": {
+        "tags": ["notify"],
+        "summary": "列出通知渠道",
+        "description": "列出全部 IM 推送渠道。config 是掩码后的配置(凭据字段替换为 notify.MaskedPrefix 开头的占位值,原样提交回服务端表示该字段未修改);secret_keys 告知前端哪些字段是凭据(渲染密码框与「留空即不改」提示)。",
+        "operationId": "listNotifyChannels",
+        "responses": {
+          "200": {
+            "description": "渠道列表",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["channels"],
+                  "properties": {
+                    "channels": {
+                      "type": "array",
+                      "items": {"$ref": "#/components/schemas/NotifyChannel"}
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "数据库查询失败",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      },
+      "post": {
+        "tags": ["notify"],
+        "summary": "新建通知渠道",
+        "description": "新建一个 IM 推送渠道(多实例,各自过滤规则)。kind 必须是已注册类型,name 必填;config 的键随渠道类型不同并由其校验(缺必填项返回 400)。mode 缺省 realtime(逐条推送)或 digest(汇总);rate_per_min 缺省用渠道默认值,显式 0 表示不限流。filter 会在写入时校验受限取值(如 min_severity)。",
+        "operationId": "createNotifyChannel",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/NotifyChannelCreate"}
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "创建成功,返回新渠道 ID",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["id"],
+                  "properties": {
+                    "id": {"type": "integer", "format": "int64"}
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "渠道类型无效、缺少渠道名称、config 校验失败、推送模式无效、限流值为负或 filter 校验失败",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "500": {
+            "description": "保存失败",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      }
+    },
+    "/api/notify/channels/{id}": {
+      "patch": {
+        "tags": ["notify"],
+        "summary": "更新通知渠道",
+        "description": "部分更新(PATCH 语义):未提供的字段保留库中原值。kind 可改,但改类型意味着凭据字段整套替换,不能与旧配置合并,目标地址变更时必须对凭据字段重新表态(提交掩码值会因目标变更被拒绝)。config 中把掩码值原样提交=该字段未修改。停用/启用切换会同步把存量待发投递标记为 skipped,避免重新启用时收到过时积压。name 传空字符串报 400。",
+        "operationId": "updateNotifyChannel",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "渠道 ID",
+            "schema": {"type": "integer", "format": "int64"}
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/NotifyChannelUpdate"}
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "更新成功,返回渠道 ID",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["id"],
+                  "properties": {
+                    "id": {"type": "integer", "format": "int64"}
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "渠道类型/推送模式无效、config 校验失败、限流值为负或渠道名称为空",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "404": {
+            "description": "渠道不存在",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "500": {
+            "description": "保存失败",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      },
+      "delete": {
+        "tags": ["notify"],
+        "summary": "删除通知渠道",
+        "description": "删除一个通知渠道。",
+        "operationId": "deleteNotifyChannel",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "渠道 ID",
+            "schema": {"type": "integer", "format": "int64"}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "删除成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["ok"],
+                  "properties": {"ok": {"type": "boolean"}}
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "id 非数字",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "404": {
+            "description": "渠道不存在",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "500": {
+            "description": "删除失败",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      }
+    },
+    "/api/notify/channels/{id}/test": {
+      "post": {
+        "tags": ["notify"],
+        "summary": "发送渠道测试消息",
+        "description": "用当前保存的配置同步发送一条测试消息(内容为「测试消息 · 渠道配置正常」)。绕过投递队列直接调用渠道 Send,以便立即把「能不能发出去」反馈给用户;HTTP 客户端超时上限 15 秒。发送失败返回 502 并把渠道原始错误如实回传(调试配置的唯一线索)。",
+        "operationId": "testNotifyChannel",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "渠道 ID",
+            "schema": {"type": "integer", "format": "int64"}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "测试消息发送成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["ok", "latency_ms"],
+                  "properties": {
+                    "ok": {"type": "boolean"},
+                    "latency_ms": {
+                      "type": "integer",
+                      "description": "发送耗时(毫秒)"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "渠道类型未注册或当前配置校验失败",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "404": {
+            "description": "渠道不存在",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "500": {
+            "description": "数据库读取失败",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "502": {
+            "description": "渠道返回发送失败,错误消息为渠道原始错误",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      }
+    },
+    "/api/notify/deliveries": {
+      "get": {
+        "tags": ["notify"],
+        "summary": "查询投递历史",
+        "description": "分页查询漏洞推送投递历史,支持按状态(state)、事件类型(event_kind)与渠道(channel_id)过滤;page 从 1 起,page_size 缺省 50。total 为符合过滤条件的总条数。每条含消息标题摘要(title/severity),列表不必展开即可看出推送内容。",
+        "operationId": "listNotifyDeliveries",
+        "parameters": [
+          {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "description": "投递状态过滤",
+            "schema": {"type": "string", "enum": ["pending", "sending", "sent", "failed", "skipped"]}
+          },
+          {
+            "name": "event_kind",
+            "in": "query",
+            "required": false,
+            "description": "事件类型过滤",
+            "schema": {"type": "string", "enum": ["finding_created", "finding_status_changed"]}
+          },
+          {
+            "name": "channel_id",
+            "in": "query",
+            "required": false,
+            "description": "渠道 ID 过滤(非数字按 0 处理=不过滤)",
+            "schema": {"type": "integer", "format": "int64"}
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "description": "页码,从 1 起,缺省 1",
+            "schema": {"type": "integer", "minimum": 1, "default": 1}
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "required": false,
+            "description": "每页条数,缺省 50",
+            "schema": {"type": "integer", "minimum": 1, "default": 50}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "投递历史页",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/NotifyDeliveryListResponse"}
+              }
+            }
+          },
+          "500": {
+            "description": "数据库查询失败",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      }
+    },
+    "/api/notify/deliveries/{id}/retry": {
+      "post": {
+        "tags": ["notify"],
+        "summary": "重发一条投递",
+        "description": "手动重发一条投递:重置为 pending、清零重试计数、立即到期(人工重发意味着失败原因已处理,不再受旧计数限制)。仅 failed/skipped 状态允许重发;投递不存在或状态不允许时返回 400。",
+        "operationId": "retryNotifyDelivery",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "投递 ID",
+            "schema": {"type": "integer", "format": "int64"}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "已重新入队",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["ok"],
+                  "properties": {"ok": {"type": "boolean"}}
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "id 非数字、投递不存在或当前状态不允许重发(仅 failed/skipped 可重发)",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      }
+    }
+  },
+  "schemas": {
+    "ChatTurnRequest": {
+      "type": "object",
+      "required": ["message"],
+      "properties": {
+        "message": {
+          "type": "string",
+          "description": "用户消息文本,可内嵌 @[(漏洞|资产|企业|接口|IP|应用|域名|子域名|服务)#ID 别名] 引用标签,服务端会展开为记录快照"
+        },
+        "attachments": {
+          "type": "array",
+          "description": "附件清单(POST /api/chat/upload scope=task 上传的文件,路径相对任务工作目录)",
+          "items": {"$ref": "#/components/schemas/ChatAttachment"}
+        },
+        "seg": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "目标主会话分段;缺省=最新分段(旧客户端兼容)"
+        }
+      }
+    },
+    "ChatAttachment": {
+      "type": "object",
+      "required": ["name", "path", "size"],
+      "properties": {
+        "name": {"type": "string", "description": "文件名(含去重后缀,如 report-1.txt)"},
+        "path": {"type": "string", "description": "相对聊天工作目录的路径,如 uploads/report.txt"},
+        "size": {"type": "integer", "format": "int64", "description": "文件字节数"},
+        "abs": {"type": "string", "description": "落盘绝对路径(暂存 scope=staging 时前端用于写任务描述)"}
+      }
+    },
+    "ChatRuleReply": {
+      "type": "object",
+      "required": ["reply", "mode"],
+      "properties": {
+        "reply": {"type": "string", "description": "规则模式回复(态势摘要或指令回执)"},
+        "mode": {"type": "string", "enum": ["rule"], "description": "固定为 rule,表示未配置 LLM 的本地处理"}
+      }
+    },
+    "ChatTurnAccepted": {
+      "type": "object",
+      "required": ["status", "mode"],
+      "properties": {
+        "status": {"type": "string", "enum": ["accepted"]},
+        "mode": {"type": "string", "enum": ["llm"], "description": "固定为 llm,表示回合已交后台执行"}
+      }
+    },
+    "ChatMention": {
+      "type": "object",
+      "required": ["kind", "id", "label", "description"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "description": "引用类型",
+          "enum": ["finding", "company", "asset", "endpoint", "ip", "app", "root_domain", "subdomain", "service"]
+        },
+        "id": {"type": "integer", "format": "int64", "description": "记录 ID"},
+        "label": {"type": "string", "description": "展示标签(最长 160 字)"},
+        "description": {"type": "string", "description": "补充说明(最长 240 字)"}
+      }
+    },
+    "ChatMentionPage": {
+      "type": "object",
+      "required": ["items"],
+      "properties": {
+        "items": {
+          "type": "array",
+          "description": "当前页结果(每页最多 20 条)",
+          "items": {"$ref": "#/components/schemas/ChatMention"}
+        },
+        "next_cursor": {
+          "type": "string",
+          "description": "下一页游标;无更多结果时缺省"
+        }
+      }
+    },
+    "Conversation": {
+      "type": "object",
+      "required": ["id", "agent_key", "title", "pinned", "created_at", "updated_at"],
+      "properties": {
+        "id": {"type": "integer", "format": "int64"},
+        "agent_key": {"type": "string", "description": "绑定的 agent key"},
+        "title": {"type": "string"},
+        "llm_profile_id": {
+          "type": "integer",
+          "format": "int64",
+          "nullable": true,
+          "description": "会话固定使用的 LLM 配置 ID;缺省=跟随 agent 绑定/全局"
+        },
+        "pinned": {"type": "boolean", "description": "是否置顶"},
+        "pinned_at": {
+          "type": "string",
+          "format": "date-time",
+          "nullable": true,
+          "description": "置顶时间;未置顶时缺省"
+        },
+        "created_at": {"type": "string", "format": "date-time"},
+        "updated_at": {"type": "string", "format": "date-time"}
+      }
+    },
+    "ConversationListItem": {
+      "description": "会话列表项:会话字段 + 运行状态",
+      "allOf": [
+        {"$ref": "#/components/schemas/Conversation"},
+        {
+          "type": "object",
+          "required": ["running"],
+          "properties": {
+            "running": {"type": "boolean", "description": "该会话是否有一轮 Agent 回合正在执行"}
+          }
+        }
+      ]
+    },
+    "ConversationCreateRequest": {
+      "type": "object",
+      "required": ["agent_key"],
+      "properties": {
+        "agent_key": {
+          "type": "string",
+          "maxLength": 120,
+          "description": "会话绑定的 agent key(必须已存在)"
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "标题;空则默认「新对话」"
+        },
+        "llm_profile_id": {
+          "type": "integer",
+          "format": "int64",
+          "nullable": true,
+          "description": "固定使用的 LLM 配置 ID;null/缺省=跟随 agent 绑定或全局"
+        }
+      }
+    },
+    "ConversationRenameRequest": {
+      "type": "object",
+      "description": "title 与 pinned 至少提供一个",
+      "properties": {
+        "title": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "新标题(去首尾空白后不能为空)"
+        },
+        "pinned": {"type": "boolean", "description": "是否置顶"}
+      }
+    },
+    "ConversationProfileRequest": {
+      "type": "object",
+      "properties": {
+        "llm_profile_id": {
+          "type": "integer",
+          "format": "int64",
+          "nullable": true,
+          "description": "要绑定的 LLM 配置 ID;传 null 或缺省=清除绑定(回退 agent 绑定→全局)"
+        }
+      }
+    },
+    "ConversationMessageRequest": {
+      "type": "object",
+      "description": "message 与 attachments 至少一项非空",
+      "required": ["message"],
+      "properties": {
+        "message": {
+          "type": "string",
+          "description": "消息文本,可内嵌 @[(类型#ID) 别名] 引用标签"
+        },
+        "attachments": {
+          "type": "array",
+          "description": "附件(POST /api/chat/upload scope=session 上传,路径相对会话工作目录)",
+          "items": {"$ref": "#/components/schemas/ChatAttachment"}
+        }
+      }
+    },
+    "ConversationDeleteBatchRequest": {
+      "type": "object",
+      "required": ["ids"],
+      "properties": {
+        "ids": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 100,
+          "description": "要删除的会话 ID 列表(自动去重,1-100 个)",
+          "items": {"type": "integer", "format": "int64", "minimum": 1}
+        }
+      }
+    },
+    "ConversationDeleteBatchItem": {
+      "type": "object",
+      "required": ["id", "ok"],
+      "properties": {
+        "id": {"type": "integer", "format": "int64"},
+        "ok": {"type": "boolean", "description": "是否实际删除成功"},
+        "error": {"type": "string", "description": "失败原因(如 conversation not found)"}
+      }
+    },
+    "ConversationDeleteBatchResponse": {
+      "type": "object",
+      "required": ["items"],
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {"$ref": "#/components/schemas/ConversationDeleteBatchItem"}
+        }
+      }
+    },
+    "ChatActivity": {
+      "type": "object",
+      "description": "会话/任务活动流条目(转录渲染的统一形状)",
+      "required": ["seq", "worker", "ts", "kind", "is_error", "summary"],
+      "properties": {
+        "seq": {"type": "integer", "format": "int64", "description": "活动 ID(单调递增,分页/增量游标)"},
+        "intent_id": {"type": "string", "description": "关联意图节点 ID"},
+        "worker": {"type": "string", "description": "产生者(会话侧为 agent key 或 kind=user 的 user;任务侧为 mainagent/planner/worker 名)"},
+        "ts": {"type": "string", "format": "date-time"},
+        "kind": {
+          "type": "string",
+          "description": "活动类型:user(用户消息)、thinking、tool_use、tool_result、text、result、usage 等"
+        },
+        "tool": {"type": "string", "description": "工具名(kind=tool_use 时)"},
+        "tool_use_id": {"type": "string", "description": "工具调用 ID"},
+        "is_error": {"type": "boolean", "description": "是否出错步骤"},
+        "summary": {"type": "string", "description": "摘要(单行截断,列表用)"},
+        "detail": {"type": "string", "description": "完整内容(列表接口为空,经详情接口懒加载)"},
+        "metadata": {
+          "type": "object",
+          "description": "附加元数据(JSON 对象)",
+          "additionalProperties": true
+        },
+        "source_task_id": {"type": "string", "description": "来源任务 ID(归档继承的活动)"},
+        "inherited": {"type": "boolean", "description": "是否从源任务继承"},
+        "main_seg": {"type": "integer", "description": "主会话分段号(mainagent 行才有)"},
+        "input_tokens": {"type": "integer", "nullable": true, "description": "输入 token 数(仅 kind=result)"},
+        "output_tokens": {"type": "integer", "nullable": true, "description": "输出 token 数(仅 kind=result)"},
+        "cache_read_tokens": {"type": "integer", "nullable": true, "description": "缓存读 token 数(仅 kind=result)"},
+        "cache_write_tokens": {"type": "integer", "nullable": true, "description": "缓存写 token 数(仅 kind=result)"}
+      }
+    },
+    "ConversationMessagesResponse": {
+      "type": "object",
+      "required": ["items", "cursor", "running", "hasMore"],
+      "properties": {
+        "items": {
+          "type": "array",
+          "description": "活动列表(增量模式为 id 升序;历史模式页内按时间正序)",
+          "items": {"$ref": "#/components/schemas/ChatActivity"}
+        },
+        "cursor": {
+          "type": "integer",
+          "format": "int64",
+          "description": "分页游标(增量模式=本页最大 id,历史模式=本页最小 id),作为下一页的 since/before"
+        },
+        "running": {"type": "boolean", "description": "该会话是否有回合正在执行(决定是否继续轮询)"},
+        "hasMore": {"type": "boolean", "description": "历史模式:是否还有更早记录;增量模式恒为 false"}
+      }
+    },
+    "ConversationMessageDetailResponse": {
+      "type": "object",
+      "required": ["detail"],
+      "properties": {
+        "detail": {
+          "type": "string",
+          "description": "活动完整内容;用户消息带附件时为 {\"text\":..., \"attachments\":[ChatAttachment]} JSON;记录不存在时为空字符串"
+        }
+      }
+    },
+    "SideQuestion": {
+      "type": "object",
+      "description": "一次旁路问答(请求+回答+进度上下文)",
+      "required": ["id", "client_request_id", "question", "answer", "status", "model", "snapshot_at", "created_at", "sequence", "usage", "ordinal", "context"],
+      "properties": {
+        "id": {"type": "string", "format": "uuid", "description": "请求 ID(用于 SSE/cancel)"},
+        "client_request_id": {"type": "string", "description": "客户端幂等键"},
+        "question": {"type": "string"},
+        "answer": {"type": "string", "description": "当前已生成的答案(流式过程中为部分文本)"},
+        "status": {
+          "type": "string",
+          "enum": ["running", "completed", "failed", "cancelled", "interrupted"],
+          "description": "interrupted=服务重启时被中断"
+        },
+        "error": {"type": "string", "description": "失败/停止原因(失败或取消时)"},
+        "model": {"$ref": "#/components/schemas/SideQuestionModel"},
+        "snapshot_at": {"type": "string", "format": "date-time", "description": "所基于上下文快照的捕获时间"},
+        "created_at": {"type": "string", "format": "date-time"},
+        "sequence": {"type": "integer", "format": "int64", "description": "进度序号(单调递增,SSE 增量推送依据)"},
+        "usage": {"$ref": "#/components/schemas/SideQuestionUsage"},
+        "ordinal": {"type": "integer", "format": "int64", "description": "会话内序号(历史分页游标)"},
+        "context": {"$ref": "#/components/schemas/SideQuestionContext"}
+      }
+    },
+    "SideQuestionModel": {
+      "type": "object",
+      "description": "捕获快照时使用的 LLM 模型信息",
+      "required": ["profile_id", "name", "format", "model", "identity", "streaming", "window_tokens"],
+      "properties": {
+        "profile_id": {"type": "integer", "format": "int64", "description": "LLM 配置 ID(0=全局直连配置)"},
+        "name": {"type": "string", "description": "配置名称"},
+        "format": {"type": "string", "description": "提供商格式(openai/anthropic 等)"},
+        "model": {"type": "string", "description": "模型名"},
+        "identity": {"type": "string", "description": "模型配置指纹(校验配置是否已变化)"},
+        "streaming": {"type": "boolean"},
+        "window_tokens": {"type": "integer", "description": "上下文窗口 token 数"}
+      }
+    },
+    "SideQuestionUsage": {
+      "type": "object",
+      "required": ["input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"],
+      "properties": {
+        "input_tokens": {"type": "integer"},
+        "output_tokens": {"type": "integer"},
+        "cache_read_tokens": {"type": "integer"},
+        "cache_write_tokens": {"type": "integer"}
+      }
+    },
+    "SideQuestionContext": {
+      "type": "object",
+      "description": "回答生成的进度/预算信息",
+      "required": ["recent_exchanges", "history_summarized", "snapshot_summarized"],
+      "properties": {
+        "phase": {
+          "type": "string",
+          "enum": ["preparing", "summarizing_history", "compressing_snapshot", "retrying", "answering"],
+          "description": "当前阶段"
+        },
+        "recent_exchanges": {"type": "integer", "description": "回放的历史问答条数"},
+        "history_summarized": {"type": "boolean", "description": "历史已压缩为摘要"},
+        "snapshot_summarized": {"type": "boolean", "description": "快照已压缩为摘要"},
+        "estimated_input_tokens": {"type": "integer", "description": "预估输入 token 数"},
+        "input_budget": {"type": "integer", "description": "输入 token 预算"},
+        "output_tokens": {"type": "integer", "description": "输出 token 预算"},
+        "overflow_retried": {"type": "boolean", "description": "上下文超限后是否已压缩重试"}
+      }
+    },
+    "SideQuestionSnapshotMeta": {
+      "type": "object",
+      "description": "父级(会话/任务/意图)最新上下文快照的元数据",
+      "required": ["captured_at", "model", "available", "reason"],
+      "properties": {
+        "captured_at": {"type": "string", "format": "date-time", "description": "快照捕获时间"},
+        "model": {"$ref": "#/components/schemas/SideQuestionModel"},
+        "available": {"type": "boolean", "description": "快照模型当前是否可用"},
+        "reason": {"type": "string", "description": "不可用原因(如模型配置已删除或变化;可用时为空)"}
+      }
+    },
+    "SideQuestionHistoryResponse": {
+      "type": "object",
+      "required": ["items", "current", "next_cursor", "snapshot"],
+      "properties": {
+        "items": {
+          "type": "array",
+          "description": "已完成/已取消的历史请求(ordinal 倒序,最多 20 条)",
+          "items": {"$ref": "#/components/schemas/SideQuestion"}
+        },
+        "current": {
+          "nullable": true,
+          "allOf": [{"$ref": "#/components/schemas/SideQuestion"}],
+          "description": "正在运行的请求;无则 null"
+        },
+        "next_cursor": {
+          "type": "integer",
+          "format": "int64",
+          "description": "更早历史分页游标(取本页最小 ordinal 作为下次 before);0=没有更多"
+        },
+        "snapshot": {
+          "nullable": true,
+          "allOf": [{"$ref": "#/components/schemas/SideQuestionSnapshotMeta"}],
+          "description": "上下文快照元数据;尚无快照时为 null"
+        }
+      }
+    },
+    "SideQuestionAskRequest": {
+      "type": "object",
+      "required": ["question", "client_request_id"],
+      "properties": {
+        "question": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000,
+          "description": "旁路问题(1-4000 字符),可内嵌 @[(类型#ID) 别名] 引用标签"
+        },
+        "client_request_id": {
+          "type": "string",
+          "description": "客户端生成的幂等请求 ID(格式见 worker 消息请求 ID 规则)"
+        }
+      }
+    },
+    "NotifyChannel": {
+      "type": "object",
+      "description": "通知渠道(对外表述;config 为掩码后配置)",
+      "required": ["id", "name", "kind", "enabled", "mode", "config", "filter", "rate_per_min", "created_at", "updated_at", "secret_keys"],
+      "properties": {
+        "id": {"type": "integer", "format": "int64"},
+        "name": {"type": "string"},
+        "kind": {"type": "string", "description": "渠道类型(如 dingtalk/webhook 等,见 GET /api/notify/meta 的 kinds)"},
+        "enabled": {"type": "boolean"},
+        "mode": {"type": "string", "enum": ["realtime", "digest"], "description": "realtime=逐条推送,digest=汇总"},
+        "config": {
+          "type": "object",
+          "description": "渠道配置(凭据字段为掩码值,原样提交=未修改)",
+          "additionalProperties": true
+        },
+        "filter": {"$ref": "#/components/schemas/NotifyFilter"},
+        "rate_per_min": {"type": "integer", "description": "每分钟限流条数;0=不限流"},
+        "created_at": {"type": "string", "format": "date-time"},
+        "updated_at": {"type": "string", "format": "date-time"},
+        "secret_keys": {
+          "type": "array",
+          "description": "该渠道类型的凭据字段名列表(前端据此渲染密码框)",
+          "items": {"type": "string"}
+        }
+      }
+    },
+    "NotifyFilter": {
+      "type": "object",
+      "description": "渠道过滤规则(畸形配置退化为不过滤,宁可多推不漏推)",
+      "required": ["min_severity", "on_status_change"],
+      "properties": {
+        "min_severity": {
+          "type": "string",
+          "enum": ["", "low", "medium", "high", "critical"],
+          "description": "最低严重度门槛;空=不设门槛"
+        },
+        "task_ids": {
+          "type": "array",
+          "nullable": true,
+          "description": "限定任务 ID;空数组=null=不限",
+          "items": {"type": "integer", "format": "int64"}
+        },
+        "asset_ids": {
+          "type": "array",
+          "nullable": true,
+          "description": "限定资产 ID;空=不限(要求事件与资产有交集)",
+          "items": {"type": "integer", "format": "int64"}
+        },
+        "vulnclass_include": {
+          "type": "array",
+          "nullable": true,
+          "description": "漏洞类型包含关键词(大小写不敏感子串,命中任一即收);空=全收",
+          "items": {"type": "string"}
+        },
+        "vulnclass_exclude": {
+          "type": "array",
+          "nullable": true,
+          "description": "漏洞类型排除关键词(命中任一即排除,优先于包含)",
+          "items": {"type": "string"}
+        },
+        "on_status_change": {"type": "boolean", "description": "是否接收漏洞状态变更事件(仅 realtime 模式有意义)"}
+      }
+    },
+    "NotifyChannelCreate": {
+      "type": "object",
+      "required": ["kind", "name"],
+      "properties": {
+        "name": {"type": "string", "description": "渠道名称(必填)"},
+        "kind": {"type": "string", "description": "渠道类型(见 GET /api/notify/meta 的 kinds)"},
+        "enabled": {"type": "boolean", "description": "是否启用;缺省跟随默认"},
+        "mode": {"type": "string", "enum": ["realtime", "digest"], "description": "缺省 realtime"},
+        "config": {
+          "type": "object",
+          "description": "渠道配置(键与校验规则随 kind 而定)",
+          "additionalProperties": true
+        },
+        "filter": {"$ref": "#/components/schemas/NotifyFilter"},
+        "rate_per_min": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "每分钟限流条数;缺省用渠道默认值,显式 0=不限流"
+        }
+      }
+    },
+    "NotifyChannelUpdate": {
+      "type": "object",
+      "description": "部分更新:未提供的字段保留库中原值",
+      "properties": {
+        "name": {"type": "string", "description": "新名称(不能为空串)"},
+        "kind": {"type": "string", "description": "新渠道类型(改类型=凭据整套替换)"},
+        "enabled": {"type": "boolean", "description": "启用/停用(停用会把存量待发投递标记为 skipped)"},
+        "mode": {"type": "string", "enum": ["realtime", "digest"]},
+        "config": {
+          "type": "object",
+          "description": "渠道配置(掩码值原样提交=该字段未修改;目标地址变更时必须重新提供凭据)",
+          "additionalProperties": true
+        },
+        "filter": {"$ref": "#/components/schemas/NotifyFilter"},
+        "rate_per_min": {"type": "integer", "minimum": 0, "description": "每分钟限流条数;0=不限流"}
+      }
+    },
+    "NotifyChannelKindMeta": {
+      "type": "object",
+      "required": ["kind", "default_rate_per_min", "secret_keys"],
+      "properties": {
+        "kind": {"type": "string", "description": "渠道类型标识"},
+        "default_rate_per_min": {"type": "integer", "description": "该类型默认每分钟限流值"},
+        "secret_keys": {
+          "type": "array",
+          "description": "凭据字段名列表",
+          "items": {"type": "string"}
+        }
+      }
+    },
+    "NotifyStats": {
+      "type": "object",
+      "description": "通知系统健康度快照",
+      "required": ["channels", "channels_on", "pending", "failed", "sent_today", "backlog_age_ms"],
+      "properties": {
+        "channels": {"type": "integer", "description": "渠道总数"},
+        "channels_on": {"type": "integer", "description": "启用中的渠道数"},
+        "pending": {"type": "integer", "description": "待发+发送中投递数"},
+        "failed": {"type": "integer", "description": "失败投递数"},
+        "sent_today": {"type": "integer", "description": "今日已送达数"},
+        "backlog_age_ms": {"type": "integer", "format": "int64", "description": "最老待发投递距今毫秒数(积压时长)"}
+      }
+    },
+    "NotifyMetaResponse": {
+      "type": "object",
+      "required": ["kinds", "enabled", "public_base_url", "digest_interval_min", "defaults", "stats"],
+      "properties": {
+        "kinds": {
+          "type": "array",
+          "description": "支持的渠道类型及各自元数据",
+          "items": {"$ref": "#/components/schemas/NotifyChannelKindMeta"}
+        },
+        "enabled": {"type": "boolean", "description": "通知全局开关"},
+        "public_base_url": {"type": "string", "description": "消息回链的外部访问地址(未设置为空串)"},
+        "digest_interval_min": {"type": "string", "description": "汇总周期分钟数(设置表字符串值;空=未设置)"},
+        "defaults": {
+          "type": "object",
+          "required": ["digest_interval_min"],
+          "properties": {
+            "digest_interval_min": {"type": "integer", "description": "汇总周期默认值(分钟,30)"}
+          }
+        },
+        "stats": {"$ref": "#/components/schemas/NotifyStats"}
+      }
+    },
+    "NotifyDelivery": {
+      "type": "object",
+      "description": "一条投递历史",
+      "required": ["id", "finding_id", "event_kind", "channel_id", "channel_name", "channel_kind", "state", "attempts", "last_error", "created_at", "next_attempt_at", "title", "severity"],
+      "properties": {
+        "id": {"type": "integer", "format": "int64"},
+        "finding_id": {"type": "string", "description": "漏洞 ID(字符串形式的数字)"},
+        "event_kind": {"type": "string", "enum": ["finding_created", "finding_status_changed"], "description": "触发事件类型"},
+        "channel_id": {"type": "integer", "format": "int64"},
+        "channel_name": {"type": "string"},
+        "channel_kind": {"type": "string"},
+        "state": {"type": "string", "enum": ["pending", "sending", "sent", "failed", "skipped"]},
+        "attempts": {"type": "integer", "description": "尝试次数"},
+        "last_error": {"type": "string", "description": "最近一次错误(无则空串)"},
+        "batch_id": {"type": "integer", "format": "int64", "nullable": true, "description": "汇总批次 ID(digest 批量投递时)"},
+        "created_at": {"type": "string", "format": "date-time"},
+        "sent_at": {"type": "string", "format": "date-time", "nullable": true, "description": "送达时间(未送达缺省)"},
+        "next_attempt_at": {"type": "string", "format": "date-time", "description": "下次尝试时间"},
+        "title": {"type": "string", "description": "消息标题摘要(漏洞名称,缺省漏洞类型)"},
+        "severity": {"type": "string", "description": "漏洞严重度"}
+      }
+    },
+    "NotifyDeliveryListResponse": {
+      "type": "object",
+      "required": ["deliveries", "total", "page", "page_size"],
+      "properties": {
+        "deliveries": {
+          "type": "array",
+          "items": {"$ref": "#/components/schemas/NotifyDelivery"}
+        },
+        "total": {"type": "integer", "description": "符合过滤条件的总条数"},
+        "page": {"type": "integer"},
+        "page_size": {"type": "integer"}
+      }
+    }
+  }
+}

@@ -1,0 +1,1275 @@
+{
+  "paths": {
+    "/api/exploration/frontier": {
+      "get": {
+        "tags": ["exploration"],
+        "summary": "探索前沿(待执行意图队列)",
+        "description": "返回任务当前前沿(frontier)的探索节点,即探索引擎下一步可领取/待处理的意图。task 为数字任务 ID 或 active(当前活跃任务);任务不存在或无活跃任务时返回空数组。limit 控制返回条数,默认 100。响应节点为 TaskNode 结构(frontier 主要是 kind=intent 的节点,state 如 open/blocked/exhausted)。",
+        "operationId": "explorationFrontier",
+        "parameters": [
+          {"name": "task", "in": "query", "required": false, "schema": {"type": "string"}, "description": "数字任务 ID 或 active(当前活跃任务);缺省=active"},
+          {"name": "limit", "in": "query", "required": false, "schema": {"type": "integer", "default": 100}, "description": "返回条数上限,默认 100"}
+        ],
+        "responses": {
+          "200": {
+            "description": "前沿节点列表(任务不存在时为空数组)",
+            "content": {"application/json": {"schema": {"type": "array", "items": {"$ref": "#/components/schemas/TaskNode"}}}}
+          }
+        }
+      }
+    },
+    "/api/exploration/findings": {
+      "get": {
+        "tags": ["findings"],
+        "summary": "发现(漏洞)列表",
+        "description": "全局「发现」页与任务发现 Tab 共用。不带 task 参数:读取独立 findings 表(任务删除后漏洞仍保留),不带 page/limit 时返回裸数组(最多 500 条,供仪表盘汇总);携带 page 或 limit 任一即切换为服务端分页,返回 {items,total,page,page_size}。带 task 参数:读取该任务的探索节点视图并附加来源任务继承的只读发现(inherited=true),始终返回裸数组。筛选/排序统一下推 SQL:severity/status/vulnclass/task_id/q/asset_scope 为筛选参数,sort=severity 按严重度加权降序,其余(含缺省)最新优先。筛选值 all 或空表示不过滤;task_id 还支持 __unassigned__(无任务或任务已删)。",
+        "operationId": "listFindings",
+        "parameters": [
+          {"name": "task", "in": "query", "required": false, "schema": {"type": "string"}, "description": "数字任务 ID 或 active;不传=全局发现页(独立 findings 表)"},
+          {"name": "page", "in": "query", "required": false, "schema": {"type": "integer", "minimum": 1, "default": 1}, "description": "页码(1 起);携带 page 或 limit 任一即启用分页响应"},
+          {"name": "limit", "in": "query", "required": false, "schema": {"type": "integer", "minimum": 1, "maximum": 200, "default": 20}, "description": "每页条数,默认 20,上限 200"},
+          {"name": "severity", "in": "query", "required": false, "schema": {"type": "string", "enum": ["all", "critical", "high", "medium", "low"]}, "description": "严重度筛选;all/空=不过滤"},
+          {"name": "status", "in": "query", "required": false, "schema": {"type": "string", "enum": ["all", "pending", "in_progress", "confirmed", "resolved", "fixed", "false_positive", "ignored", "duplicate", "risk_accepted"]}, "description": "处理状态筛选;all/空=不过滤"},
+          {"name": "vulnclass", "in": "query", "required": false, "schema": {"type": "string"}, "description": "漏洞类型精确筛选;all/空=不过滤"},
+          {"name": "task_id", "in": "query", "required": false, "schema": {"type": "string"}, "description": "按任务筛选(数字任务 ID);__unassigned__=无任务或任务已删;all/空=不过滤"},
+          {"name": "q", "in": "query", "required": false, "schema": {"type": "string"}, "description": "关键词模糊检索(名称/类型/摘要/证据/报告正文,ILIKE 字面匹配)"},
+          {"name": "sort", "in": "query", "required": false, "schema": {"type": "string"}, "description": "排序:severity=按严重度降序(critical>high>medium>low)再按时间;其他值或缺省=最新优先"},
+          {"name": "asset_scope", "in": "query", "required": false, "schema": {"type": "string"}, "description": "资产树节点 key(a:<资产id>/c:<公司id>/r:<根域名>/__none__),选中节点等于选中其整棵子树;空=不按资产筛选"}
+        ],
+        "responses": {
+          "200": {
+            "description": "无分页参数或按任务查询时返回 Finding 裸数组;带分页参数时返回 {items,total,page,page_size}",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {"type": "array", "items": {"$ref": "#/components/schemas/Finding"}},
+                    {"$ref": "#/components/schemas/FindingPage"}
+                  ]
+                }
+              }
+            }
+          },
+          "500": {"description": "数据库错误", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
+        }
+      }
+    },
+    "/api/exploration/findings/groups": {
+      "get": {
+        "tags": ["findings"],
+        "summary": "发现按任务分组(分页)",
+        "description": "全局发现视图的任务分组页。每组统计该任务名下匹配筛选的发现数、按严重度分档计数与最近发现时间;组总数(group total)与发现总数(finding_total)是两个独立计数,便于分组翻页不丢失导出/勾选总数。TaskID 为 null 的记录(无任务或任务已删)归入同一个未分配组。task_status 由实时引擎补充派生(queued/paused/running/done 等),避免任务执行中时分组状态滞后。page 默认 1,limit 默认 10、上限 100。筛选参数与列表接口一致。",
+        "operationId": "listFindingGroups",
+        "parameters": [
+          {"name": "page", "in": "query", "required": false, "schema": {"type": "integer", "minimum": 1, "default": 1}, "description": "页码(1 起),非法值回退 1"},
+          {"name": "limit", "in": "query", "required": false, "schema": {"type": "integer", "minimum": 1, "maximum": 100, "default": 10}, "description": "每组页条数,默认 10,上限 100"},
+          {"name": "severity", "in": "query", "required": false, "schema": {"type": "string", "enum": ["all", "critical", "high", "medium", "low"]}, "description": "严重度筛选;all/空=不过滤"},
+          {"name": "status", "in": "query", "required": false, "schema": {"type": "string", "enum": ["all", "pending", "in_progress", "confirmed", "resolved", "fixed", "false_positive", "ignored", "duplicate", "risk_accepted"]}, "description": "处理状态筛选;all/空=不过滤"},
+          {"name": "vulnclass", "in": "query", "required": false, "schema": {"type": "string"}, "description": "漏洞类型精确筛选;all/空=不过滤"},
+          {"name": "task_id", "in": "query", "required": false, "schema": {"type": "string"}, "description": "按任务筛选;__unassigned__=未分配组;all/空=不过滤"},
+          {"name": "q", "in": "query", "required": false, "schema": {"type": "string"}, "description": "关键词模糊检索"},
+          {"name": "sort", "in": "query", "required": false, "schema": {"type": "string"}, "description": "排序:severity=组内最高严重度降序;其他/缺省=最近发现时间降序"},
+          {"name": "asset_scope", "in": "query", "required": false, "schema": {"type": "string"}, "description": "资产树节点 key,同列表接口"}
+        ],
+        "responses": {
+          "200": {
+            "description": "任务分组分页结果",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/FindingGroupPage"}}}
+          },
+          "500": {"description": "数据库错误", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
+        }
+      }
+    },
+    "/api/exploration/findings/asset-tree": {
+      "get": {
+        "tags": ["findings"],
+        "summary": "发现按资产聚合树",
+        "description": "「按资产」视图左侧树的一次性快照:所有挂有至少一条匹配发现的资产节点,加上放置它们所需的祖先节点,以及未关联资产桶(key=__none__)。节点 key 与覆盖图同构:a:<资产id>、c:<公司id>、r:<根域名>(无资产行的合成根域名)。Self=直接挂在该节点的发现数,Total=含全部子孙并按发现去重(一个发现挂多个资产时只在共同祖先计一次)。整树超过 3000 节点会截断:truncated=true 且 dropped_kinds 列出被丢弃的层级。筛选参数与列表接口一致(用于计数口径一致)。",
+        "operationId": "getFindingAssetTree",
+        "parameters": [
+          {"name": "severity", "in": "query", "required": false, "schema": {"type": "string", "enum": ["all", "critical", "high", "medium", "low"]}, "description": "严重度筛选;all/空=不过滤"},
+          {"name": "status", "in": "query", "required": false, "schema": {"type": "string", "enum": ["all", "pending", "in_progress", "confirmed", "resolved", "fixed", "false_positive", "ignored", "duplicate", "risk_accepted"]}, "description": "处理状态筛选;all/空=不过滤"},
+          {"name": "vulnclass", "in": "query", "required": false, "schema": {"type": "string"}, "description": "漏洞类型精确筛选"},
+          {"name": "task_id", "in": "query", "required": false, "schema": {"type": "string"}, "description": "按任务筛选;__unassigned__=未分配;all/空=不过滤"},
+          {"name": "q", "in": "query", "required": false, "schema": {"type": "string"}, "description": "关键词模糊检索"},
+          {"name": "sort", "in": "query", "required": false, "schema": {"type": "string"}, "description": "排序参数(树按发现数/标签排序,此处仅为口径一致接受)"},
+          {"name": "asset_scope", "in": "query", "required": false, "schema": {"type": "string"}, "description": "资产树节点 key(用于子树聚焦)"}
+        ],
+        "responses": {
+          "200": {
+            "description": "资产聚合树快照",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/FindingAssetTree"}}}
+          },
+          "500": {"description": "数据库错误", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
+        }
+      }
+    },
+    "/api/exploration/findings/stats": {
+      "get": {
+        "tags": ["findings"],
+        "summary": "发现统计汇总",
+        "description": "全表聚合(含归档任务的冷数据合并):总数、pending 数、按严重度分档计数、去重后按字母序排列的漏洞类型列表,以及「有漏洞的任务」下拉选项(任务删除后 description 为空,前端回退显示 id)。供发现页统计卡片与筛选下拉使用;统计不受分页影响,始终精确。",
+        "operationId": "getFindingStats",
+        "responses": {
+          "200": {
+            "description": "全表聚合统计",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/FindingStats"}}}
+          },
+          "500": {"description": "数据库错误", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
+        }
+      }
+    },
+    "/api/exploration/findings/export": {
+      "get": {
+        "tags": ["findings"],
+        "summary": "导出发现(漏洞)",
+        "description": "按 scope 与 format 导出发现页的漏洞,成功响应均为附件下载(Content-Disposition: attachment)。scope=filtered(默认,含空)沿用页面筛选参数;all 导出全部;selected 导出勾选的 ids(必填,逗号分隔的 finding id)。format=md-single:整合为一份 Markdown(text/markdown);md-zip:一漏洞一 .md 打包 zip,附流量证据(application/zip,支持 Range 续传);csv:CSV 表格(text/csv);json:FindingDTO 数组(application/json,traffic_bindings 不含报文头)。所有格式都会先暂存流量证据快照,证据缺失/归档状态冲突会返回 404/409/422。",
+        "operationId": "exportFindings",
+        "parameters": [
+          {"name": "scope", "in": "query", "required": false, "schema": {"type": "string", "enum": ["filtered", "all", "selected"], "default": "filtered"}, "description": "导出范围:filtered=沿用页面筛选(默认);all=全部;selected=勾选的 ids"},
+          {"name": "format", "in": "query", "required": true, "schema": {"type": "string", "enum": ["md-single", "md-zip", "csv", "json"]}, "description": "导出格式;未知值返回 400"},
+          {"name": "ids", "in": "query", "required": false, "schema": {"type": "string"}, "description": "逗号分隔的 finding id 列表,scope=selected 时必填且非空"},
+          {"name": "severity", "in": "query", "required": false, "schema": {"type": "string", "enum": ["all", "critical", "high", "medium", "low"]}, "description": "严重度筛选(scope=filtered 时生效)"},
+          {"name": "status", "in": "query", "required": false, "schema": {"type": "string", "enum": ["all", "pending", "in_progress", "confirmed", "resolved", "fixed", "false_positive", "ignored", "duplicate", "risk_accepted"]}, "description": "状态筛选(scope=filtered 时生效)"},
+          {"name": "vulnclass", "in": "query", "required": false, "schema": {"type": "string"}, "description": "漏洞类型筛选(scope=filtered 时生效)"},
+          {"name": "task_id", "in": "query", "required": false, "schema": {"type": "string"}, "description": "按任务筛选(scope=filtered 时生效);__unassigned__=未分配"},
+          {"name": "q", "in": "query", "required": false, "schema": {"type": "string"}, "description": "关键词模糊检索(scope=filtered 时生效)"},
+          {"name": "sort", "in": "query", "required": false, "schema": {"type": "string"}, "description": "排序(scope=filtered 时生效)"},
+          {"name": "asset_scope", "in": "query", "required": false, "schema": {"type": "string"}, "description": "资产树节点 key(scope=filtered 时生效)"}
+        ],
+        "responses": {
+          "200": {
+            "description": "导出文件(附件下载,Content-Type 随 format 变化;文件名形如 findings-YYYYMMDD-HHMMSS.<ext>)",
+            "content": {
+              "text/markdown": {"schema": {"type": "string"}, "description": "format=md-single 的整合 Markdown 报告"},
+              "application/zip": {"schema": {"type": "string", "format": "binary"}, "description": "format=md-zip 的 zip 包(一漏洞一 .md,含流量证据)"},
+              "text/csv": {"schema": {"type": "string"}, "description": "format=csv 的 CSV 表格"},
+              "application/json": {"schema": {"type": "array", "items": {"$ref": "#/components/schemas/Finding"}}, "description": "format=json 的 FindingDTO 数组(traffic_bindings 不含 req_head/resp_head)"}
+            }
+          },
+          "400": {"description": "scope/format 非法,ids 缺失或含非法 id", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "404": {"description": "导出涉及的漏洞或证据不存在", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "409": {"description": "任务归档状态冲突", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "422": {"description": "证据暂存失败(如证据文件缺失)", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "500": {"description": "数据库/打包错误", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
+        }
+      }
+    },
+    "/api/exploration/findings/{id}": {
+      "get": {
+        "tags": ["findings"],
+        "summary": "发现详情",
+        "description": "按独立 findings 表 id(列表 DTO 的 finding_id 字段)读取单条发现,锚定资产已解析为展示标签。详细 Markdown 报告(report 字段)仅此接口返回,列表接口为空。可携带 context_task=数字任务 ID 或 active 做任务上下文可见性判定:发现既不属于该任务也不属于其来源任务时 404;属于来源任务时响应附 source_task_id 且 inherited=true(继承漏洞只读)。",
+        "operationId": "getFindingDetail",
+        "parameters": [
+          {"name": "id", "in": "path", "required": true, "schema": {"type": "integer", "format": "int64", "minimum": 1}, "description": "漏洞 ID(独立 findings 表 id)"},
+          {"name": "context_task", "in": "query", "required": false, "schema": {"type": "string"}, "description": "任务上下文(数字任务 ID 或 active);用于判定该发现在此任务视图中的可见性与继承标记"}
+        ],
+        "responses": {
+          "200": {
+            "description": "发现详情(含完整 report)",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Finding"}}}
+          },
+          "400": {"description": "id 非法", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "404": {"description": "漏洞不存在,或 context_task 不存在/该发现在此任务上下文不可见", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "500": {"description": "数据库错误", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
+        }
+      },
+      "patch": {
+        "tags": ["findings"],
+        "summary": "更新发现(状态/严重度/名称/类型)",
+        "description": "部分更新 {status,severity,name,vulnclass} 的任意子集,至少提供一个字段。status 更新走带通知版本:状态变更与「状态变更推送事件」在同一事务落库(事件登记失败不影响状态更新);severity 变更会镜像到来源探索节点,保持任务内视图同步。返回更新后的完整发现 DTO。",
+        "operationId": "patchFinding",
+        "parameters": [
+          {"name": "id", "in": "path", "required": true, "schema": {"type": "integer", "format": "int64", "minimum": 1}, "description": "漏洞 ID(独立 findings 表 id)"}
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {"schema": {"$ref": "#/components/schemas/FindingPatchRequest"}}
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "更新后的发现 DTO",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Finding"}}}
+          },
+          "400": {"description": "id 非法 / JSON 解析失败 / 未提供任何字段 / status 或 severity 取值非法", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "404": {"description": "漏洞不存在", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "500": {"description": "数据库错误", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
+        }
+      },
+      "delete": {
+        "tags": ["findings"],
+        "summary": "删除发现",
+        "description": "删除独立 findings 表记录及其来源探索节点(id 为 findings 表 id,即 DTO 的 finding_id)。返回 {deleted:true,id}。",
+        "operationId": "deleteFinding",
+        "parameters": [
+          {"name": "id", "in": "path", "required": true, "schema": {"type": "integer", "format": "int64", "minimum": 1}, "description": "漏洞 ID(独立 findings 表 id)"}
+        ],
+        "responses": {
+          "200": {
+            "description": "删除结果",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/FindingDeleteResult"}}}
+          },
+          "400": {"description": "id 非法", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "404": {"description": "漏洞不存在", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "500": {"description": "数据库错误", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
+        }
+      }
+    },
+    "/api/exploration/findings/{id}/lineage": {
+      "get": {
+        "tags": ["findings"],
+        "summary": "发现溯源子图",
+        "description": "返回从任务根到该发现节点之间的探索子 DAG(发现节点+全部祖先+其间边),供详情页展示「这条发现是如何被到达的」。发现无节点/任务关联(如来源任务已删)或任务不在运行时返回空 {nodes:[],edges:[]}。nodes 为 TaskNode、edges 为 {src,dst,rel}。",
+        "operationId": "getFindingLineage",
+        "parameters": [
+          {"name": "id", "in": "path", "required": true, "schema": {"type": "integer", "format": "int64", "minimum": 1}, "description": "漏洞 ID(独立 findings 表 id)"}
+        ],
+        "responses": {
+          "200": {
+            "description": "溯源子图;无溯源时为空 {nodes:[],edges:[]}",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/GraphView"}}}
+          },
+          "400": {"description": "id 非法", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "404": {"description": "漏洞不存在", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "500": {"description": "数据库错误", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
+        }
+      }
+    },
+    "/api/exploration/findings/{id}/deepen": {
+      "post": {
+        "tags": ["findings"],
+        "summary": "发起漏洞深入利用意图",
+        "description": "在发现的来源任务下创建一条高优先级人工 Worker 意图(漏洞深入利用),任务随后经共享并发准入复活或排队。description 必填且 ≤4000 字符;请求体上限 32KB(超限 413)。响应返回来源任务 ID、新意图 ID、意图当前状态(响应时刻实际持久化的 state,如 open/running/done)及是否排队。来源任务或节点已不可用、任务删除中时返回 409;准入失败会回滚意图并返回 500。",
+        "operationId": "deepenFinding",
+        "parameters": [
+          {"name": "id", "in": "path", "required": true, "schema": {"type": "integer", "format": "int64", "minimum": 1}, "description": "漏洞 ID(独立 findings 表 id)"}
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {"schema": {"$ref": "#/components/schemas/FindingDeepenRequest"}}
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "已创建深入利用意图并完成准入",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/FindingDeepenResult"}}}
+          },
+          "400": {"description": "id 非法 / JSON 解析失败 / description 缺失或超长", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "404": {"description": "漏洞不存在", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "409": {"description": "来源任务或节点已不可用,或任务正在删除", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "413": {"description": "请求正文超过 32KB", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "500": {"description": "数据库/准入错误", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
+        }
+      }
+    },
+    "/api/exploration/findings/{id}/retests": {
+      "get": {
+        "tags": ["findings"],
+        "summary": "漏洞复测历史",
+        "description": "按 id 倒序列出该漏洞的全部复测记录。复测记录在其会话轮次结束后即为不可变历史;证据快照(snapshot)仅供复测 Agent 使用,不随列表返回。PostgreSQL 未连接时 503。",
+        "operationId": "listFindingRetests",
+        "parameters": [
+          {"name": "id", "in": "path", "required": true, "schema": {"type": "integer", "format": "int64", "minimum": 1}, "description": "漏洞 ID(独立 findings 表 id)"}
+        ],
+        "responses": {
+          "200": {
+            "description": "复测记录列表(倒序)",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/FindingRetestListResult"}}}
+          },
+          "400": {"description": "id 非法", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "404": {"description": "漏洞不存在", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "500": {"description": "数据库错误", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "503": {"description": "PostgreSQL 数据源未连接", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
+        }
+      },
+      "post": {
+        "tags": ["findings"],
+        "summary": "发起漏洞复测",
+        "description": "为漏洞创建复测会话(retester Agent 驱动)。notes 为可选补充说明(≤4000 字符),会随首条消息交给复测 Agent;请求体上限 64KB。若该漏洞已有进行中(pending/running)的复测,直接返回现有记录且不重复派发(created=false,200);新创建并已派发会话时返回 202(created=true)。前置条件:retester Agent 已存在且启用、已绑定 get_finding_retest_context / record_finding_retest_result 工具、复测会话 LLM 可用,否则 409/503。会话成功结束且结论为 fixed 时系统自动将漏洞状态改为已修复。",
+        "operationId": "startFindingRetest",
+        "parameters": [
+          {"name": "id", "in": "path", "required": true, "schema": {"type": "integer", "format": "int64", "minimum": 1}, "description": "漏洞 ID(独立 findings 表 id)"}
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {"schema": {"$ref": "#/components/schemas/FindingRetestStartRequest"}}
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "返回已存在的进行中复测(created=false)",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/FindingRetestStartResult"}}}
+          },
+          "202": {
+            "description": "已创建并派发新复测会话(created=true)",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/FindingRetestStartResult"}}}
+          },
+          "400": {"description": "id 非法 / JSON 解析失败 / notes 超过 4000 字符", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "404": {"description": "漏洞不存在", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "409": {"description": "复测 Agent 不存在或未启用,或所需工具未启用/未绑定", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "413": {"description": "请求正文超过 64KB", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "500": {"description": "数据库错误", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "503": {"description": "复测会话 LLM 不可用 / PostgreSQL 未连接 / 服务正在停止", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
+        }
+      }
+    },
+    "/api/exploration/findings/retests/active": {
+      "get": {
+        "tags": ["findings"],
+        "summary": "进行中的漏洞复测",
+        "description": "全局列出状态为 pending/running 的复测,仅返回小载荷(id/finding_id/conversation_id/status),供发现列表轮询复测进行中徽标。finding_id 与发现 API 一致使用字符串形式。",
+        "operationId": "listActiveFindingRetests",
+        "responses": {
+          "200": {
+            "description": "进行中的复测列表(可为空数组)",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ActiveFindingRetestListResult"}}}
+          },
+          "500": {"description": "数据库错误", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "503": {"description": "PostgreSQL 数据源未连接", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
+        }
+      }
+    },
+    "/api/exploration/intents": {
+      "get": {
+        "tags": ["exploration"],
+        "summary": "意图列表",
+        "description": "任务的探索意图(方向)节点,按 id 倒序。不带 before/page 时保持兼容的裸数组响应(limit 默认 300,上限 500);携带 before=<节点 id>(或 page 作为标记)时返回 {items,has_more} 分页形式,可向上滚动翻页越过旧的固定 300 条边界。分页形式还合并直接来源任务中已终态(done/blocked/exhausted/stopped)意图的不可变结果(标记 inherited/source_task_id),这些行不参与本任务的 frontier 与领取。",
+        "operationId": "listIntents",
+        "parameters": [
+          {"name": "task", "in": "query", "required": false, "schema": {"type": "string"}, "description": "数字任务 ID 或 active;任务不存在时返回空数组(裸数组形式)"},
+          {"name": "limit", "in": "query", "required": false, "schema": {"type": "integer", "default": 300, "maximum": 500}, "description": "返回条数,默认 300,上限 500"},
+          {"name": "before", "in": "query", "required": false, "schema": {"type": "integer", "format": "int64"}, "description": "分页游标:上一页最旧一条的节点 id,仅返回 id 更小的记录;携带后切换为分页响应"},
+          {"name": "page", "in": "query", "required": false, "schema": {"type": "integer"}, "description": "仅作为启用分页模式的标记(与 before 等效触发分页响应)"}
+        ],
+        "responses": {
+          "200": {
+            "description": "裸数组(TaskNode[])或分页对象 {items,has_more}",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {"type": "array", "items": {"$ref": "#/components/schemas/TaskNode"}},
+                    {"$ref": "#/components/schemas/IntentPage"}
+                  ]
+                }
+              }
+            }
+          },
+          "500": {"description": "数据库错误", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
+        }
+      }
+    },
+    "/api/exploration/graph": {
+      "get": {
+        "tags": ["exploration"],
+        "summary": "探索图(节点+边)",
+        "description": "返回任务完整探索链(任务图):nodes 上限 2000、edges 上限 5000,并合并直接来源任务的不可变快照(仅暴露已终态意图及其关联节点,边随之过滤,不会泄漏悬空 id 或仍在运行的意图拓扑)。任务不存在时返回空 {nodes:[],edges:[]}。边关系 rel:spawns/derived_from/yields/proves/covers。",
+        "operationId": "getExplorationGraph",
+        "parameters": [
+          {"name": "task", "in": "query", "required": false, "schema": {"type": "string"}, "description": "数字任务 ID 或 active;任务不存在时返回空图"}
+        ],
+        "responses": {
+          "200": {
+            "description": "探索图(nodes+edges)",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/GraphView"}}}
+          },
+          "500": {"description": "数据库错误", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
+        }
+      }
+    },
+    "/api/exploration/nodes": {
+      "get": {
+        "tags": ["exploration"],
+        "summary": "探索节点播报板(分页时间线)",
+        "description": "本任务探索节点的分页时间序列(默认最新在前;order=asc 反转为旧→新重放)。kind/state 均可逗号分隔多值过滤;q 为 payload/origin 的不区分大小写子串,纯数字或「#数字」可精确匹配节点 id。不含继承节点(播报板只报告本任务正在发生的事)。响应附带:edges=与本页节点相关的边;refs=边另一端邻居节点(id→TaskNode,便于显示每行的来源与产出);assets=按节点 id 分组的锚定资产(id→FindingAsset[])。page 默认 1,size 默认 20、上限 200。任务不存在时返回全空结构。",
+        "operationId": "listExplorationNodes",
+        "parameters": [
+          {"name": "task", "in": "query", "required": false, "schema": {"type": "string"}, "description": "数字任务 ID 或 active"},
+          {"name": "page", "in": "query", "required": false, "schema": {"type": "integer", "minimum": 1, "default": 1}, "description": "页码(1 起)"},
+          {"name": "size", "in": "query", "required": false, "schema": {"type": "integer", "minimum": 1, "maximum": 200, "default": 20}, "description": "每页条数,默认 20,上限 200"},
+          {"name": "kind", "in": "query", "required": false, "schema": {"type": "string"}, "description": "节点类型多值过滤(逗号分隔):goal/intent/fact/finding/hint/digest/begin"},
+          {"name": "state", "in": "query", "required": false, "schema": {"type": "string"}, "description": "节点状态多值过滤(逗号分隔),如 intent 的 open/running/blocked/done/exhausted/stopped/paused/deleted"},
+          {"name": "q", "in": "query", "required": false, "schema": {"type": "string"}, "description": "payload/origin 子串检索;纯数字或 #<数字> 精确匹配节点 id"},
+          {"name": "order", "in": "query", "required": false, "schema": {"type": "string", "enum": ["asc", "desc"], "default": "desc"}, "description": "排序方向:desc=最新在前(默认);asc=旧→新(重放)"}
+        ],
+        "responses": {
+          "200": {
+            "description": "节点分页结果(含相关边、邻居 refs 与锚定资产)",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ExplorationNodesPage"}}}
+          },
+          "500": {"description": "数据库错误", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
+        }
+      }
+    },
+    "/api/exploration/activity": {
+      "get": {
+        "tags": ["exploration"],
+        "summary": "活动流(增量轮询)",
+        "description": "Worker 执行步骤日志,以 ?since=<seq> 增量拉取(返回 id 大于 since 的记录),响应 cursor 作为下次 since,实现历史+实时无缝衔接。可带 intent=<节点 id> 限定单个 Worker 会话(含来源任务继承的已终态意图步骤)。limit 默认 300。任务不存在时返回空 {items:[],cursor:0}。列表响应 detail 字段为空(懒加载,用 /activity/{seq} 取)。会话历史翻页请用 /activity/history。",
+        "operationId": "listActivity",
+        "parameters": [
+          {"name": "task", "in": "query", "required": false, "schema": {"type": "string"}, "description": "数字任务 ID 或 active"},
+          {"name": "since", "in": "query", "required": false, "schema": {"type": "integer", "format": "int64", "default": 0}, "description": "增量游标:仅返回 id 大于该值的活动,默认 0(从头)"},
+          {"name": "limit", "in": "query", "required": false, "schema": {"type": "integer", "default": 300}, "description": "返回条数上限,默认 300"},
+          {"name": "intent", "in": "query", "required": false, "schema": {"type": "integer", "format": "int64"}, "description": "意图节点 id;限定为该 Worker 会话的活动(含继承终态意图)"}
+        ],
+        "responses": {
+          "200": {
+            "description": "活动列表与增量游标",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ActivityPage"}}}
+          },
+          "500": {"description": "数据库错误", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
+        }
+      }
+    },
+    "/api/exploration/activity/history": {
+      "get": {
+        "tags": ["exploration"],
+        "summary": "活动历史(会话反向分页)",
+        "description": "按会话读取一页活动历史(新→旧)。session 取值:main=当前主 Agent 段;main:<seg>=指定段;plan=Planner 会话;intent:<节点 id>=Worker 会话(继承的意图会话只在终态可读,且剔除模型推理/计费行)。不带 before 返回最新一页(打开会话),带 before=<活动 id> 继续向上翻更旧的页。snapshot_cursor=查询时刻任务级活动最大 id,客户端用它以 since=snapshot_cursor 打开任务级 SSE,使历史(id≤cursor)与实时尾随(id>cursor)无缝衔接;earliest_cursor=本页最早活动 id。limit 默认 200、上限 500。task 必填:任务不存在 404;session 格式非法 400;会话(意图)不存在 404。",
+        "operationId": "listActivityHistory",
+        "parameters": [
+          {"name": "task", "in": "query", "required": true, "schema": {"type": "string"}, "description": "数字任务 ID 或 active(必填)"},
+          {"name": "session", "in": "query", "required": false, "schema": {"type": "string"}, "description": "会话键:main(默认当前段)/ main:<seg> / plan / intent:<节点 id>"},
+          {"name": "before", "in": "query", "required": false, "schema": {"type": "integer", "format": "int64", "default": 0}, "description": "分页游标:仅返回 id 小于该值的活动;0=最新一页"},
+          {"name": "limit", "in": "query", "required": false, "schema": {"type": "integer", "default": 200, "maximum": 500}, "description": "每页条数,默认 200,上限 500"}
+        ],
+        "responses": {
+          "200": {
+            "description": "会话历史页(含快照游标与翻页信息)",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ActivityHistoryPage"}}}
+          },
+          "400": {"description": "session 格式非法", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "404": {"description": "任务不存在或会话(意图)不存在", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "500": {"description": "数据库错误", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
+        }
+      }
+    },
+    "/api/exploration/activity/stream": {
+      "get": {
+        "tags": ["exploration"],
+        "summary": "活动实时流(SSE)",
+        "description": "任务级活动实时尾随(text/event-stream)。流程:先分批(每批 500)补放 DB 中 id 大于 since 的积压,再订阅实时广播持续推送。每条事件形如「id: <seq>\\ndata: <ActivityEvent JSON>\\n\\n」,id 行供浏览器断线自动重连时回传 Last-Event-ID(优先级高于 since 查询参数,保证从断点精确续传);每 20 秒发送「: ping」注释行保活。可选 intent=<节点 id> 限定单 Worker 会话。补放查询出错时服务端直接关闭连接,客户端应重连并从最后 id 重试(广播有损,DB 是事实来源)。任务不存在 404。",
+        "operationId": "streamActivity",
+        "parameters": [
+          {"name": "task", "in": "query", "required": true, "schema": {"type": "string"}, "description": "数字任务 ID 或 active(必填)"},
+          {"name": "since", "in": "query", "required": false, "schema": {"type": "integer", "format": "int64", "default": 0}, "description": "起始游标:先补放 id 大于该值的历史活动;浏览器自动重连时会被 Last-Event-ID 覆盖"},
+          {"name": "intent", "in": "query", "required": false, "schema": {"type": "integer", "format": "int64"}, "description": "意图节点 id;限定为该 Worker 会话的活动"},
+          {"name": "Last-Event-ID", "in": "header", "required": false, "schema": {"type": "string"}, "description": "SSE 断线自动重连回传的最后事件 id;存在时优先于 since 查询参数"}
+        ],
+        "responses": {
+          "200": {
+            "description": "text/event-stream 事件流:id 行=活动 seq,data 行=ActivityEvent JSON;注释行「: ping」每 20 秒一次",
+            "content": {"text/event-stream": {"schema": {"type": "string"}}}
+          },
+          "404": {"description": "任务不存在", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "500": {"description": "当前连接不支持流式输出", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
+        }
+      }
+    },
+    "/api/exploration/activity/{seq}": {
+      "get": {
+        "tags": ["exploration"],
+        "summary": "活动步骤详情",
+        "description": "懒加载单条活动的完整 detail blob(字符串,通常为 Markdown/JSON 文本;列表接口不携带)。seq 为全局活动 id(db activity.id)。继承自来源任务的详情仅对已终态 Worker 意图开放,防止用全局 id 猜测出来源任务的主/规划会话或进行中的转写。detail 为空字符串表示该步骤无详情。task 必填(任务不存在 404);seq 非法按 0 处理(通常返回空 detail)。",
+        "operationId": "getActivityDetail",
+        "parameters": [
+          {"name": "seq", "in": "path", "required": true, "schema": {"type": "integer", "format": "int64"}, "description": "全局活动 id(db activity.id)"},
+          {"name": "task", "in": "query", "required": true, "schema": {"type": "string"}, "description": "数字任务 ID 或 active(必填)"}
+        ],
+        "responses": {
+          "200": {
+            "description": "活动详情 blob(可为空字符串)",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ActivityDetailResult"}}}
+          },
+          "404": {"description": "任务不存在", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "500": {"description": "数据库错误", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
+        }
+      }
+    },
+    "/api/exploration/main-sessions": {
+      "get": {
+        "tags": ["exploration"],
+        "summary": "主 Agent 会话段列表",
+        "description": "任务的主 Agent 对话分段(最新在前),始终包含隐式的原始段 0(段 0 无存储时间戳,其 created_at 为零值时间 0001-01-01T00:00:00Z)。前端把这些分段渲染为「主 Agent」下可切换的会话。current=当前段 seq(即最新段的 seq,无分段时为 0)。task 必填,任务不存在 404。",
+        "operationId": "listMainSessions",
+        "parameters": [
+          {"name": "task", "in": "query", "required": true, "schema": {"type": "string"}, "description": "数字任务 ID 或 active(必填)"}
+        ],
+        "responses": {
+          "200": {
+            "description": "会话段列表与当前段",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MainSessionListResult"}}}
+          },
+          "404": {"description": "任务不存在", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "500": {"description": "数据库错误", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
+        }
+      }
+    },
+    "/api/exploration/main-session/new": {
+      "post": {
+        "tags": ["exploration"],
+        "summary": "新建主 Agent 会话段",
+        "description": "开启一个全新的主 Agent 对话分段:仅推进分段计数器(seq=当前最大+1),任务的探索图、资产与目标全部保持共享,主 Agent 在同一任务上获得干净的转写/上下文。任务正在删除时 409。响应返回新段 seq、创建时间(RFC3339)与 current(=新 seq)。",
+        "operationId": "createMainSession",
+        "parameters": [
+          {"name": "task", "in": "query", "required": true, "schema": {"type": "string"}, "description": "数字任务 ID 或 active(必填)"}
+        ],
+        "responses": {
+          "200": {
+            "description": "新会话段已创建",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MainSessionCreated"}}}
+          },
+          "404": {"description": "任务不存在", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "409": {"description": "任务正在删除,无法新建会话", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "500": {"description": "数据库错误", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
+        }
+      }
+    },
+    "/api/exploration/tokens": {
+      "get": {
+        "tags": ["exploration"],
+        "summary": "任务 Token 用量统计",
+        "description": "按任务聚合的 token 用量:workers=各 worker(主 Agent mainagent、Planner planner、各 work#N)的输入/输出/缓存读/缓存写合计;sessions=按会话键(意图)统计的已完成运行合计(重试/重分配仍归属同一行,是权威口径);total=全任务所有 Agent 的总合计。任务不存在时返回空 workers/sessions 与零 total(不报错)。",
+        "operationId": "getTokenStats",
+        "parameters": [
+          {"name": "task", "in": "query", "required": false, "schema": {"type": "string"}, "description": "数字任务 ID 或 active;任务不存在时返回空结构"}
+        ],
+        "responses": {
+          "200": {
+            "description": "按 worker/会话/总计的 token 用量",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TokenStatsResult"}}}
+          },
+          "500": {"description": "数据库错误", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
+        }
+      }
+    },
+    "/api/exploration/findings/{id}/traffic": {
+      "get": {
+        "tags": ["finding-traffic"],
+        "summary": "漏洞流量证据清单",
+        "description": "读取漏洞已绑定的真实流量证据(不依赖流量捕获开关是否开启)。返回 {finding_id,version,report_version,bindings};清单为摘要形式:每个绑定的 snapshot 不含 req_head/resp_head(完整报文头在详情接口)。version 是证据乐观并发控制版本号,后续写操作(绑定/编辑/解绑/重排)必须携带,不匹配返回 409。可携带 context_task 判定任务上下文可见性(发现不属于该任务及其来源任务时 404)。",
+        "operationId": "getFindingTraffic",
+        "parameters": [
+          {"name": "id", "in": "path", "required": true, "schema": {"type": "integer", "format": "int64", "minimum": 1}, "description": "漏洞 ID(独立 findings 表 id)"},
+          {"name": "context_task", "in": "query", "required": false, "schema": {"type": "string"}, "description": "任务上下文(数字任务 ID 或 active);不在该任务可见范围内时 404"}
+        ],
+        "responses": {
+          "200": {
+            "description": "流量证据绑定清单(摘要,不含报文头)",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/FindingTraffic"}}}
+          },
+          "400": {"description": "id 非法", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "404": {"description": "漏洞不存在或 context_task 不存在/不可见", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "422": {"description": "证据读取失败", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "500": {"description": "数据库错误", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
+        }
+      },
+      "post": {
+        "tags": ["finding-traffic"],
+        "summary": "绑定流量证据",
+        "description": "把采集到的流量按引用绑定到漏洞:去重(按 traffic_id)、快照落盘并在证据锁内登记。traffic_refs 至少一条;traffic_id 必填,role 缺省 supporting,note 可选。请求体上限 1MB。绑定后返回与清单接口相同的(去报文头)摘要结构。继承漏洞(context_task 命中来源任务)只读:写操作 403。",
+        "operationId": "bindFindingTraffic",
+        "parameters": [
+          {"name": "id", "in": "path", "required": true, "schema": {"type": "integer", "format": "int64", "minimum": 1}, "description": "漏洞 ID(独立 findings 表 id)"},
+          {"name": "context_task", "in": "query", "required": false, "schema": {"type": "string"}, "description": "任务上下文;继承漏洞在此上下文只读(写返回 403)"}
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {"schema": {"$ref": "#/components/schemas/TrafficBindRequest"}}
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "绑定后的完整清单(摘要)",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/FindingTraffic"}}}
+          },
+          "400": {"description": "id 非法 / JSON 解析失败 / traffic_refs 为空 / traffic_id 或 role 非法", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "403": {"description": "继承漏洞只读,请在来源任务中修改", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "404": {"description": "漏洞/context_task 不存在或不可见", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "409": {"description": "证据已变更(版本冲突)/ 任务归档状态冲突", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "422": {"description": "证据处理失败(如流量不存在/无法读取)", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "500": {"description": "数据库错误", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
+        }
+      }
+    },
+    "/api/exploration/findings/{id}/traffic/{binding_id}": {
+      "get": {
+        "tags": ["finding-traffic"],
+        "summary": "流量绑定详情",
+        "description": "单条绑定的完整详情:binding 本身(含完整 req_head/resp_head 报文头)+ request/response 两侧的正文预览(各取前 8192 字节,按 UTF-8 边界截断;二进制正文仅返回占位说明并置 binary=true)。分页读取正文请用 /body 端点。",
+        "operationId": "getFindingTrafficDetail",
+        "parameters": [
+          {"name": "id", "in": "path", "required": true, "schema": {"type": "integer", "format": "int64", "minimum": 1}, "description": "漏洞 ID(独立 findings 表 id)"},
+          {"name": "binding_id", "in": "path", "required": true, "schema": {"type": "integer", "format": "int64", "minimum": 1}, "description": "绑定 ID(清单 bindings[].id)"},
+          {"name": "context_task", "in": "query", "required": false, "schema": {"type": "string"}, "description": "任务上下文(数字任务 ID 或 active)"}
+        ],
+        "responses": {
+          "200": {
+            "description": "绑定详情与两侧正文预览",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/TrafficBindingDetail"}}}
+          },
+          "400": {"description": "id 或 binding_id 非法", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "404": {"description": "漏洞不存在或绑定不存在或 context_task 不可见", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "422": {"description": "证据读取失败", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "500": {"description": "数据库错误", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
+        }
+      },
+      "patch": {
+        "tags": ["finding-traffic"],
+        "summary": "编辑流量绑定(角色/备注)",
+        "description": "修改单条绑定的 role/note。请求体必须携带 version(清单接口返回的当前版本号,乐观并发控制;不匹配返回 409)。成功后返回更新后的完整清单(与 GET 相同的摘要结构)。",
+        "operationId": "editFindingTraffic",
+        "parameters": [
+          {"name": "id", "in": "path", "required": true, "schema": {"type": "integer", "format": "int64", "minimum": 1}, "description": "漏洞 ID(独立 findings 表 id)"},
+          {"name": "binding_id", "in": "path", "required": true, "schema": {"type": "integer", "format": "int64", "minimum": 1}, "description": "要编辑的绑定 ID"},
+          {"name": "context_task", "in": "query", "required": false, "schema": {"type": "string"}, "description": "任务上下文;继承漏洞只读(写返回 403)"}
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {"schema": {"$ref": "#/components/schemas/TrafficEditRequest"}}
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "更新后的完整清单(摘要)",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/FindingTraffic"}}}
+          },
+          "400": {"description": "id/binding_id 非法 / JSON 解析失败 / 缺少 version", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "403": {"description": "继承漏洞只读", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "404": {"description": "漏洞或绑定不存在", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "409": {"description": "version 不匹配(证据已变更,请刷新后重试)", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "422": {"description": "证据处理失败", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "500": {"description": "数据库错误", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
+        }
+      },
+      "delete": {
+        "tags": ["finding-traffic"],
+        "summary": "解绑流量证据",
+        "description": "删除单条绑定。与编辑一样,请求体必须携带当前 version(乐观并发控制)。成功后返回更新后的完整清单(与 GET 相同的摘要结构)。",
+        "operationId": "deleteFindingTraffic",
+        "parameters": [
+          {"name": "id", "in": "path", "required": true, "schema": {"type": "integer", "format": "int64", "minimum": 1}, "description": "漏洞 ID(独立 findings 表 id)"},
+          {"name": "binding_id", "in": "path", "required": true, "schema": {"type": "integer", "format": "int64", "minimum": 1}, "description": "要删除的绑定 ID"},
+          {"name": "context_task", "in": "query", "required": false, "schema": {"type": "string"}, "description": "任务上下文;继承漏洞只读(写返回 403)"}
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {"schema": {"$ref": "#/components/schemas/TrafficEditRequest"}}
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "更新后的完整清单(摘要)",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/FindingTraffic"}}}
+          },
+          "400": {"description": "id/binding_id 非法 / JSON 解析失败 / 缺少 version", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "403": {"description": "继承漏洞只读", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "404": {"description": "漏洞或绑定不存在", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "409": {"description": "version 不匹配(证据已变更)", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "422": {"description": "证据处理失败", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "500": {"description": "数据库错误", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
+        }
+      }
+    },
+    "/api/exploration/findings/{id}/traffic/order": {
+      "put": {
+        "tags": ["finding-traffic"],
+        "summary": "调整流量绑定顺序",
+        "description": "全量重排该漏洞的绑定顺序(影响报告中的证据呈现顺序)。请求体必须携带 version 与 binding_ids=当前全部绑定 id 的新顺序(字符串数组)。成功后返回更新后的完整清单(与 GET 相同的摘要结构)。",
+        "operationId": "reorderFindingTraffic",
+        "parameters": [
+          {"name": "id", "in": "path", "required": true, "schema": {"type": "integer", "format": "int64", "minimum": 1}, "description": "漏洞 ID(独立 findings 表 id)"},
+          {"name": "context_task", "in": "query", "required": false, "schema": {"type": "string"}, "description": "任务上下文;继承漏洞只读(写返回 403)"}
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {"schema": {"$ref": "#/components/schemas/TrafficReorderRequest"}}
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "更新后的完整清单(摘要)",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/FindingTraffic"}}}
+          },
+          "400": {"description": "id 非法 / JSON 解析失败 / 缺少 version 或 binding_ids / binding_ids 含非法值", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "403": {"description": "继承漏洞只读", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "404": {"description": "漏洞或绑定不存在", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "409": {"description": "version 不匹配(证据已变更)", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "422": {"description": "证据处理失败", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "500": {"description": "数据库错误", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
+        }
+      }
+    },
+    "/api/exploration/findings/{id}/traffic/{binding_id}/body": {
+      "get": {
+        "tags": ["finding-traffic"],
+        "summary": "流量报文正文(原文/下载)",
+        "description": "读取绑定流量的报文原文。side 必填(request/response)。默认返回 JSON 预览:content 为合法 UTF-8 文本(按 UTF-8 边界截断,不完整尾部留给下一页),offset/length 分页(默认前 8192 字节;length 为 0 或 >8192 一律取 8192,负数 422);二进制正文(含 NUL 或首块非 UTF-8)content 为占位说明并置 binary=true。download=1 时改为 application/octet-stream 附件下载:返回完整未截断的原始字节,Content-Disposition 文件名 evidence-<binding_id>-<side>.bin。",
+        "operationId": "getFindingTrafficBody",
+        "parameters": [
+          {"name": "id", "in": "path", "required": true, "schema": {"type": "integer", "format": "int64", "minimum": 1}, "description": "漏洞 ID(独立 findings 表 id)"},
+          {"name": "binding_id", "in": "path", "required": true, "schema": {"type": "integer", "format": "int64", "minimum": 1}, "description": "绑定 ID"},
+          {"name": "side", "in": "query", "required": true, "schema": {"type": "string", "enum": ["request", "response"]}, "description": "报文侧:请求或响应(必填,其他值 422)"},
+          {"name": "download", "in": "query", "required": false, "schema": {"type": "string", "enum": ["1"]}, "description": "传 1 时以 application/octet-stream 附件返回完整原始字节"},
+          {"name": "offset", "in": "query", "required": false, "schema": {"type": "integer", "format": "int64", "default": 0}, "description": "预览起始字节偏移(默认 0;负数 422;超出正文长度 422)"},
+          {"name": "length", "in": "query", "required": false, "schema": {"type": "integer", "format": "int64", "default": 8192}, "description": "预览字节长度(默认 8192;0 或 >8192 取 8192;负数 422)"},
+          {"name": "context_task", "in": "query", "required": false, "schema": {"type": "string"}, "description": "任务上下文(数字任务 ID 或 active)"}
+        ],
+        "responses": {
+          "200": {
+            "description": "预览模式返回 JSON(TrafficEvidencePreview);download=1 返回完整原始字节附件",
+            "content": {
+              "application/json": {"schema": {"$ref": "#/components/schemas/TrafficEvidencePreview"}, "description": "正文预览(分页,二进制时为占位说明)"},
+              "application/octet-stream": {"schema": {"type": "string", "format": "binary"}, "description": "download=1 时的完整原始报文(附件 evidence-<binding_id>-<side>.bin)"}
+            }
+          },
+          "400": {"description": "id 或 binding_id 非法", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "404": {"description": "漏洞或绑定不存在或 context_task 不可见", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "422": {"description": "side 非法 / offset 或 length 为负 / offset 超出正文长度 / 证据读取失败", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "500": {"description": "数据库错误", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
+        }
+      }
+    }
+  },
+  "schemas": {
+    "TaskNode": {
+      "type": "object",
+      "description": "探索节点(frontier/意图列表/图/播报板共用的节点 DTO)。id 为节点 id 的字符串形式。",
+      "required": ["id", "type", "priority", "state", "origin", "ts"],
+      "properties": {
+        "id": {"type": "string", "description": "节点 id(数字的字符串形式)"},
+        "type": {"type": "string", "enum": ["begin", "goal", "intent", "fact", "finding", "hint", "digest"], "description": "节点类型(begin 为遗留任务根,新任务用 fact+origin)"},
+        "payload": {"type": "string", "description": "原始 payload JSON 字符串;空时省略"},
+        "priority": {"type": "integer", "description": "优先级(深入利用意图为高优先级)"},
+        "state": {"type": "string", "enum": ["open", "running", "paused", "done", "blocked", "exhausted", "stopped", "deleted", "met", "abandoned", "confirmed", "dismissed", "origin", "active", "consumed", "superseded"], "description": "节点状态,取值随 type 而定:intent=open/running/paused/done/blocked/exhausted/stopped/deleted;goal=open/met/abandoned;fact=confirmed/dismissed/origin;finding=confirmed/dismissed;hint=active/consumed;digest=active/superseded"},
+        "origin": {"type": "string", "description": "来源标记(如 planner/worker/system)"},
+        "ts": {"type": "string", "format": "date-time", "description": "创建时间(RFC3339)"},
+        "source_task_id": {"type": "string", "description": "来源任务 id(仅继承节点;节点来自直接来源任务时出现)"},
+        "inherited": {"type": "boolean", "description": "是否继承自来源任务(只读视图)"},
+        "delete_reason": {"type": "string", "description": "意图假删除(state=deleted)时的用户填写原因"}
+      }
+    },
+    "ExplorationEdge": {
+      "type": "object",
+      "description": "探索图的一条边(节点 id 均为字符串形式)。",
+      "required": ["src", "dst", "rel"],
+      "properties": {
+        "src": {"type": "string", "description": "起点节点 id"},
+        "dst": {"type": "string", "description": "终点节点 id"},
+        "rel": {"type": "string", "enum": ["spawns", "derived_from", "yields", "proves", "covers"], "description": "关系:spawns=派生,derived_from=源自,yields=产出,proves=证明,covers=digest 折叠成员"}
+      }
+    },
+    "GraphView": {
+      "type": "object",
+      "description": "探索图(整体或溯源子图):nodes+edges。",
+      "required": ["nodes", "edges"],
+      "properties": {
+        "nodes": {"type": "array", "items": {"$ref": "#/components/schemas/TaskNode"}},
+        "edges": {"type": "array", "items": {"$ref": "#/components/schemas/ExplorationEdge"}}
+      }
+    },
+    "IntentPage": {
+      "type": "object",
+      "description": "意图列表的分页响应(携带 before 或 page 时)。",
+      "required": ["items", "has_more"],
+      "properties": {
+        "items": {"type": "array", "items": {"$ref": "#/components/schemas/TaskNode"}},
+        "has_more": {"type": "boolean", "description": "是否还有更旧的意图(以最后一条的 id 作为下次 before)"}
+      }
+    },
+    "ExplorationNodesPage": {
+      "type": "object",
+      "description": "播报板节点分页结果,附相关边、邻居节点 refs 与按节点分组的锚定资产。",
+      "required": ["items", "total", "page", "size", "edges", "refs", "assets"],
+      "properties": {
+        "items": {"type": "array", "items": {"$ref": "#/components/schemas/TaskNode"}},
+        "total": {"type": "integer", "description": "匹配筛选的总节点数"},
+        "page": {"type": "integer", "description": "当前页码"},
+        "size": {"type": "integer", "description": "每页条数"},
+        "edges": {"type": "array", "items": {"$ref": "#/components/schemas/ExplorationEdge"}, "description": "与本页节点相关的边(含指向页外邻居的)"},
+        "refs": {"type": "object", "additionalProperties": {"$ref": "#/components/schemas/TaskNode"}, "description": "邻居节点(键=节点 id 字符串),用于显示每行的来源与产出"},
+        "assets": {"type": "object", "additionalProperties": {"type": "array", "items": {"$ref": "#/components/schemas/FindingAsset"}}, "description": "按节点 id 分组的锚定资产(键=节点 id 字符串)"}
+      }
+    },
+    "Finding": {
+      "type": "object",
+      "description": "发现(漏洞)DTO。id 与 finding_id 同为 findings 表 id 的字符串形式;按任务视图查询时部分节点无 findings 行,此时 finding_id 缺省(不可编辑状态)。report 仅详情接口返回。",
+      "required": ["traffic_count", "evidence_version", "report_evidence_version", "report_stale", "id", "vulnclass", "severity", "status", "summary", "evidence", "ts"],
+      "properties": {
+        "traffic_count": {"type": "integer", "description": "已绑定流量证据条数"},
+        "evidence_version": {"type": "integer", "format": "int64", "description": "证据当前版本号(写流量绑定时的乐观并发控制版本)"},
+        "report_evidence_version": {"type": "integer", "format": "int64", "description": "报告生成时所基于的证据版本"},
+        "report_stale": {"type": "boolean", "description": "报告是否已落后于证据(有报告且版本不一致时 true)"},
+        "traffic_bindings": {"type": "array", "items": {"$ref": "#/components/schemas/TrafficBinding"}, "description": "流量证据绑定(仅导出 json 时填充,且不含报文头)"},
+        "id": {"type": "string", "description": "发现 id(数字的字符串形式;全局视图=finding_id,任务视图=探索节点 id)"},
+        "finding_id": {"type": "string", "description": "独立 findings 表 id 的字符串形式;任务视图中无对应行时缺省(该发现不可编辑)"},
+        "vulnclass": {"type": "string", "description": "漏洞类型(如 SQL 注入/未授权访问)"},
+        "name": {"type": "string", "description": "漏洞名称;为空时前端回退展示 vulnclass"},
+        "severity": {"type": "string", "enum": ["critical", "high", "medium", "low"], "description": "严重度"},
+        "status": {"type": "string", "enum": ["pending", "in_progress", "confirmed", "resolved", "fixed", "false_positive", "ignored", "duplicate", "risk_accepted"], "description": "处理状态"},
+        "summary": {"type": "string", "description": "漏洞摘要"},
+        "evidence": {"type": "string", "description": "证据 JSON 字符串({by,poc})"},
+        "report": {"type": "string", "description": "详细报告(Markdown);仅详情接口返回,列表为空省略"},
+        "intent_id": {"type": "string", "description": "关联意图(保留字段,通常为空)"},
+        "param_id": {"type": "string", "description": "关联参数(保留字段)"},
+        "task_id": {"type": "string", "description": "来源任务 id;来源任务已删时缺省"},
+        "task_description": {"type": "string", "description": "来源任务描述"},
+        "source_task_id": {"type": "string", "description": "在当前任务上下文中实际归属的来源任务 id(继承时)"},
+        "inherited": {"type": "boolean", "description": "是否继承自来源任务(只读)"},
+        "assets": {"type": "array", "items": {"$ref": "#/components/schemas/FindingAsset"}, "description": "锚定资产(已解析展示标签)"},
+        "ts": {"type": "string", "format": "date-time", "description": "发现时间(RFC3339)"}
+      }
+    },
+    "FindingAsset": {
+      "type": "object",
+      "description": "发现锚定的资产(展示用,已带标签)。",
+      "required": ["id", "type", "label"],
+      "properties": {
+        "id": {"type": "string", "description": "资产 id(数字的字符串形式)"},
+        "type": {"type": "string", "description": "资产类型(subdomain/ip/service/app/endpoint 等)"},
+        "label": {"type": "string", "description": "展示标签(URL/method+URL/domain:port/ip:port 等)"}
+      }
+    },
+    "FindingPage": {
+      "type": "object",
+      "description": "发现列表的服务端分页响应(全局视图携带 page/limit 时)。",
+      "required": ["items", "total", "page", "page_size"],
+      "properties": {
+        "items": {"type": "array", "items": {"$ref": "#/components/schemas/Finding"}},
+        "total": {"type": "integer", "description": "匹配筛选的总条数"},
+        "page": {"type": "integer", "description": "当前页码"},
+        "page_size": {"type": "integer", "description": "每页条数"}
+      }
+    },
+    "FindingGroup": {
+      "type": "object",
+      "description": "发现按任务分组的一组(未分配/任务已删的记录同属一组,task_id 为 null)。",
+      "required": ["task_name", "task_description", "task_status", "count", "critical", "high", "medium", "low", "last_found_at"],
+      "properties": {
+        "task_id": {"type": "integer", "format": "int64", "nullable": true, "description": "任务 id;无任务或任务已删时为 null"},
+        "task_name": {"type": "string", "description": "任务名称;空=未命名"},
+        "task_description": {"type": "string", "description": "任务描述(未分配组为空)"},
+        "task_status": {"type": "string", "enum": ["", "created", "running", "paused", "queued", "done", "failed", "timeout"], "description": "任务状态(实时引擎派生:queued/paused/running/终态等;未分配组为空)"},
+        "count": {"type": "integer", "description": "该组匹配筛选的发现数"},
+        "critical": {"type": "integer", "description": "严重级数量"},
+        "high": {"type": "integer", "description": "高危数量"},
+        "medium": {"type": "integer", "description": "中危数量"},
+        "low": {"type": "integer", "description": "低危数量"},
+        "last_found_at": {"type": "string", "format": "date-time", "description": "组内最近发现时间(RFC3339)"}
+      }
+    },
+    "FindingGroupPage": {
+      "type": "object",
+      "description": "发现分组的分页响应;total=分组总数,finding_total=匹配筛选的发现总数(两者独立)。",
+      "required": ["items", "total", "finding_total", "page", "page_size"],
+      "properties": {
+        "items": {"type": "array", "items": {"$ref": "#/components/schemas/FindingGroup"}},
+        "total": {"type": "integer", "description": "分组总数"},
+        "finding_total": {"type": "integer", "description": "匹配筛选的发现总数"},
+        "page": {"type": "integer", "description": "当前页码"},
+        "page_size": {"type": "integer", "description": "每页组数"}
+      }
+    },
+    "FindingStats": {
+      "type": "object",
+      "description": "发现页统计卡片聚合(含归档任务冷数据)。",
+      "required": ["total", "pending", "critical", "high", "medium", "low", "vulnclasses", "tasks"],
+      "properties": {
+        "total": {"type": "integer", "description": "发现总数"},
+        "pending": {"type": "integer", "description": "待处理(pending)数量"},
+        "critical": {"type": "integer", "description": "严重级数量"},
+        "high": {"type": "integer", "description": "高危数量"},
+        "medium": {"type": "integer", "description": "中危数量"},
+        "low": {"type": "integer", "description": "低危数量"},
+        "vulnclasses": {"type": "array", "items": {"type": "string"}, "description": "去重后的漏洞类型列表(字母序)"},
+        "tasks": {"type": "array", "items": {"$ref": "#/components/schemas/FindingTaskOption"}, "description": "有漏洞的任务下拉选项(最新在前)"}
+      }
+    },
+    "FindingTaskOption": {
+      "type": "object",
+      "description": "「按任务」筛选下拉的一项。",
+      "required": ["id", "name", "description", "count"],
+      "properties": {
+        "id": {"type": "integer", "format": "int64", "description": "任务 id"},
+        "name": {"type": "string", "description": "任务名称;空=未命名"},
+        "description": {"type": "string", "description": "任务描述;任务删除后为空,前端回退显示 id"},
+        "count": {"type": "integer", "description": "该任务的发现数"}
+      }
+    },
+    "FindingAssetTree": {
+      "type": "object",
+      "description": "发现按资产聚合树快照(nodes 已排序:同父下按发现数降序、标签升序,未关联桶恒在最后)。",
+      "required": ["nodes", "finding_total", "truncated"],
+      "properties": {
+        "nodes": {"type": "array", "items": {"$ref": "#/components/schemas/FindingAssetNode"}},
+        "finding_total": {"type": "integer", "description": "匹配筛选的发现总数"},
+        "truncated": {"type": "boolean", "description": "是否因超过 3000 节点而丢弃了部分层级"},
+        "dropped_kinds": {"type": "array", "items": {"type": "string"}, "description": "被丢弃的层级类型(截断时)"}
+      }
+    },
+    "FindingAssetNode": {
+      "type": "object",
+      "description": "资产树节点。key:资产行=a:<id>,企业=c:<id>,无资产行的根域名=r:<domain>,未关联桶=__none__。",
+      "required": ["key", "kind", "label", "self", "total", "critical", "high", "medium", "low", "last_found_at"],
+      "properties": {
+        "key": {"type": "string", "description": "节点 key(a:<id>/c:<id>/r:<domain>/__none__)"},
+        "parent": {"type": "string", "description": "父节点 key;根节点省略"},
+        "kind": {"type": "string", "enum": ["company", "root_domain", "subdomain", "ip", "service", "app", "endpoint", "none"], "description": "节点层级类型(none=未关联资产桶)"},
+        "label": {"type": "string", "description": "展示标签(URL/域名:端口/IP:端口/app 等)"},
+        "asset_id": {"type": "integer", "format": "int64", "description": "资产行 id(kind=company/root_domain/none 时省略)"},
+        "company_id": {"type": "integer", "format": "int64", "description": "所属公司 id(存在时)"},
+        "self": {"type": "integer", "description": "直接挂在本节点的发现数"},
+        "total": {"type": "integer", "description": "含全部子孙的发现数(按发现去重)"},
+        "critical": {"type": "integer", "description": "子树严重级数量"},
+        "high": {"type": "integer", "description": "子树高危数量"},
+        "medium": {"type": "integer", "description": "子树中危数量"},
+        "low": {"type": "integer", "description": "子树低危数量"},
+        "last_found_at": {"type": "string", "format": "date-time", "description": "子树内最近发现时间(RFC3339)"}
+      }
+    },
+    "FindingRetest": {
+      "type": "object",
+      "description": "漏洞复测记录。会话轮次结束后即不可变;结论为 fixed 时系统自动把漏洞状态改为已修复。快照仅供 Agent 使用,列表不返回。",
+      "required": ["id", "finding_id", "conversation_id", "status", "verdict", "notes", "summary", "evidence", "error", "created_at", "started_at", "finished_at"],
+      "properties": {
+        "id": {"type": "integer", "format": "int64", "description": "复测记录 id"},
+        "finding_id": {"type": "integer", "format": "int64", "description": "关联漏洞 id(findings 表)"},
+        "conversation_id": {"type": "integer", "format": "int64", "nullable": true, "description": "复测会话 id;尚未创建会话时为 null"},
+        "status": {"type": "string", "enum": ["pending", "running", "completed", "failed", "stopped"], "description": "复测状态(stopped=会话被删除等原因终止)"},
+        "verdict": {"type": "string", "enum": ["", "reproduced", "fixed", "inconclusive"], "description": "结论:复现成功/已修复/无法确认;空串=尚未出结论"},
+        "notes": {"type": "string", "description": "发起时的人工补充说明"},
+        "snapshot": {"type": "object", "nullable": true, "description": "发起时的证据快照(漏洞+资产+约束,任意 JSON);仅 Agent 上下文返回,列表/历史接口省略"},
+        "summary": {"type": "string", "description": "结论摘要"},
+        "evidence": {"type": "string", "description": "结论依据(Markdown)"},
+        "error": {"type": "string", "description": "失败/停止原因(无则为空)"},
+        "created_at": {"type": "string", "format": "date-time", "description": "创建时间(RFC3339)"},
+        "started_at": {"type": "string", "format": "date-time", "nullable": true, "description": "开始执行时间;未开始为 null"},
+        "finished_at": {"type": "string", "format": "date-time", "nullable": true, "description": "结束时间;未结束为 null"}
+      }
+    },
+    "FindingRetestListResult": {
+      "type": "object",
+      "description": "单个漏洞的复测历史(id 倒序)。",
+      "required": ["retests"],
+      "properties": {
+        "retests": {"type": "array", "items": {"$ref": "#/components/schemas/FindingRetest"}}
+      }
+    },
+    "ActiveFindingRetest": {
+      "type": "object",
+      "description": "进行中复测的小载荷(供列表轮询徽标)。",
+      "required": ["id", "finding_id", "conversation_id", "status"],
+      "properties": {
+        "id": {"type": "integer", "format": "int64", "description": "复测记录 id"},
+        "finding_id": {"type": "string", "description": "漏洞 id(数字的字符串形式,与发现 API 一致)"},
+        "conversation_id": {"type": "integer", "format": "int64", "description": "复测会话 id"},
+        "status": {"type": "string", "enum": ["pending", "running"], "description": "复测状态"}
+      }
+    },
+    "ActiveFindingRetestListResult": {
+      "type": "object",
+      "description": "全局进行中的复测列表。",
+      "required": ["retests"],
+      "properties": {
+        "retests": {"type": "array", "items": {"$ref": "#/components/schemas/ActiveFindingRetest"}}
+      }
+    },
+    "FindingRetestStartResult": {
+      "type": "object",
+      "description": "发起复测的结果:created=true 表示新建并已派发(202);false 表示返回已存在的进行中复测(200)。",
+      "required": ["retest", "created"],
+      "properties": {
+        "retest": {"$ref": "#/components/schemas/FindingRetest"},
+        "created": {"type": "boolean", "description": "本次是否新建了复测会话"}
+      }
+    },
+    "FindingRetestStartRequest": {
+      "type": "object",
+      "description": "发起复测的请求体。",
+      "properties": {
+        "notes": {"type": "string", "description": "复测补充说明(≤4000 字符,随首条消息交给复测 Agent;可省略)"}
+      }
+    },
+    "FindingDeepenRequest": {
+      "type": "object",
+      "description": "发起漏洞深入利用的请求体(上限 32KB)。",
+      "required": ["description"],
+      "properties": {
+        "description": {"type": "string", "description": "深入利用说明(必填,≤4000 字符),会成为人工 Worker 意图的任务描述"}
+      }
+    },
+    "FindingDeepenResult": {
+      "type": "object",
+      "description": "深入利用意图创建结果。",
+      "required": ["task_id", "intent_id", "state", "queued"],
+      "properties": {
+        "task_id": {"type": "string", "description": "来源任务 id"},
+        "intent_id": {"type": "string", "description": "新创建的意图节点 id(字符串形式)"},
+        "state": {"type": "string", "enum": ["open", "running", "done", "blocked", "exhausted", "stopped"], "description": "响应时刻意图的实际持久化状态(准入可能立即唤醒 Worker)"},
+        "queued": {"type": "boolean", "description": "任务是否仍在排队等待并发槽位(排队任务的意图保持 open)"}
+      }
+    },
+    "FindingDeleteResult": {
+      "type": "object",
+      "description": "删除发现的结果。",
+      "required": ["deleted", "id"],
+      "properties": {
+        "deleted": {"type": "boolean", "description": "恒为 true"},
+        "id": {"type": "integer", "format": "int64", "description": "被删除的漏洞 id"}
+      }
+    },
+    "FindingPatchRequest": {
+      "type": "object",
+      "description": "部分更新发现:status/severity/name/vulnclass 任意子集,至少一个字段。",
+      "properties": {
+        "status": {"type": "string", "enum": ["pending", "in_progress", "confirmed", "resolved", "fixed", "false_positive", "ignored", "duplicate", "risk_accepted"], "description": "新的处理状态(与状态变更推送事件同事务落库)"},
+        "severity": {"type": "string", "enum": ["critical", "high", "medium", "low"], "description": "新的严重度(同步镜像到来源探索节点)"},
+        "name": {"type": "string", "description": "新的漏洞名称(首尾空白会被去除)"},
+        "vulnclass": {"type": "string", "description": "新的漏洞类型(首尾空白会被去除)"}
+      }
+    },
+    "ActivityEvent": {
+      "type": "object",
+      "description": "一条 Worker 执行步骤(activity)。worker 常见取值:mainagent(主 Agent)/planner(规划)/work#N(Worker)/user/system。kind 常见取值:text/thinking/tool_use/tool_result/result/user。token 四项仅在 kind=result 的终态行上出现。",
+      "required": ["seq", "worker", "ts", "kind", "is_error", "summary"],
+      "properties": {
+        "seq": {"type": "integer", "format": "int64", "description": "全局活动 id(增量游标/SSE 事件 id/详情端点的 seq)"},
+        "intent_id": {"type": "string", "description": "所属意图节点 id(字符串形式;主 Agent/Planner 行省略)"},
+        "worker": {"type": "string", "description": "执行者:mainagent/planner/work#N/user/system"},
+        "ts": {"type": "string", "format": "date-time", "description": "发生时间(RFC3339)"},
+        "kind": {"type": "string", "enum": ["text", "thinking", "tool_use", "tool_result", "result", "user"], "description": "步骤类型"},
+        "tool": {"type": "string", "description": "工具名(kind=tool_use/tool_result 时)"},
+        "tool_use_id": {"type": "string", "description": "工具调用配对 id"},
+        "is_error": {"type": "boolean", "description": "该步骤是否出错"},
+        "summary": {"type": "string", "description": "步骤摘要(列表用)"},
+        "detail": {"type": "string", "description": "完整详情(列表接口为空,懒加载;仅详情/SSE 事件携带)"},
+        "metadata": {"type": "object", "description": "附加元数据(任意 JSON;列表/历史接口通常省略)"},
+        "source_task_id": {"type": "string", "description": "来源任务 id(继承行)"},
+        "inherited": {"type": "boolean", "description": "是否来自来源任务(继承行)"},
+        "main_seg": {"type": "integer", "nullable": true, "description": "主 Agent 会话段号(仅 mainagent 行;非主 Agent 行省略)"},
+        "input_tokens": {"type": "integer", "nullable": true, "description": "输入 token(仅 kind=result 行)"},
+        "output_tokens": {"type": "integer", "nullable": true, "description": "输出 token(仅 kind=result 行)"},
+        "cache_read_tokens": {"type": "integer", "nullable": true, "description": "缓存读 token(仅 kind=result 行)"},
+        "cache_write_tokens": {"type": "integer", "nullable": true, "description": "缓存写 token(仅 kind=result 行)"}
+      }
+    },
+    "ActivityPage": {
+      "type": "object",
+      "description": "活动流增量轮询响应:cursor 作为下次 since。",
+      "required": ["items", "cursor"],
+      "properties": {
+        "items": {"type": "array", "items": {"$ref": "#/components/schemas/ActivityEvent"}},
+        "cursor": {"type": "integer", "format": "int64", "description": "本次返回的最大活动 id(下次请求的 since)"}
+      }
+    },
+    "ActivityHistoryPage": {
+      "type": "object",
+      "description": "会话历史反向分页响应。earliest_cursor=本页最早活动 id(作为下次 before);snapshot_cursor=任务级最大活动 id(用它开 SSE,历史与实时无缝衔接)。",
+      "required": ["items", "snapshot_cursor", "earliest_cursor", "has_more"],
+      "properties": {
+        "items": {"type": "array", "items": {"$ref": "#/components/schemas/ActivityEvent"}},
+        "snapshot_cursor": {"type": "integer", "format": "int64", "description": "查询时刻任务级活动最大 id(SSE join 游标,始终为本任务的)"},
+        "earliest_cursor": {"type": "integer", "format": "int64", "description": "本页最早活动 id(翻页 before;无数据时=入参 before)"},
+        "has_more": {"type": "boolean", "description": "是否还有更旧的活动"}
+      }
+    },
+    "ActivityDetailResult": {
+      "type": "object",
+      "description": "单个活动步骤的详情 blob。",
+      "required": ["detail"],
+      "properties": {
+        "detail": {"type": "string", "description": "完整详情(通常为 Markdown/JSON 文本;无详情时为空字符串)"}
+      }
+    },
+    "MainSession": {
+      "type": "object",
+      "description": "主 Agent 会话段。段 0 为隐式原始段(无存储时间戳,created_at 为零值时间)。",
+      "required": ["seq", "created_at"],
+      "properties": {
+        "seq": {"type": "integer", "description": "段号(0=原始会话,新建递增)"},
+        "created_at": {"type": "string", "format": "date-time", "description": "创建时间(RFC3339);段 0 为 0001-01-01T00:00:00Z"}
+      }
+    },
+    "MainSessionListResult": {
+      "type": "object",
+      "description": "主 Agent 会话段列表(最新在前,恒含段 0)与当前段。",
+      "required": ["sessions", "current"],
+      "properties": {
+        "sessions": {"type": "array", "items": {"$ref": "#/components/schemas/MainSession"}},
+        "current": {"type": "integer", "description": "当前段 seq(最新段的 seq,无分段时为 0)"}
+      }
+    },
+    "MainSessionCreated": {
+      "type": "object",
+      "description": "新建主 Agent 会话段的结果。",
+      "required": ["seq", "created_at", "current"],
+      "properties": {
+        "seq": {"type": "integer", "description": "新段号"},
+        "created_at": {"type": "string", "format": "date-time", "description": "创建时间(RFC3339)"},
+        "current": {"type": "integer", "description": "当前段 seq(=新段号)"}
+      }
+    },
+    "TokenUsage": {
+      "type": "object",
+      "description": "单个 worker 的 token 聚合。",
+      "required": ["worker", "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"],
+      "properties": {
+        "worker": {"type": "string", "description": "worker 名(mainagent/planner/work#N)"},
+        "input_tokens": {"type": "integer"},
+        "output_tokens": {"type": "integer"},
+        "cache_read_tokens": {"type": "integer"},
+        "cache_write_tokens": {"type": "integer"}
+      }
+    },
+    "SessionTokenUsage": {
+      "type": "object",
+      "description": "按会话键(意图)统计的已完成运行 token 合计;重试/重分配仍归属同一行。",
+      "required": ["session", "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"],
+      "properties": {
+        "session": {"type": "string", "description": "会话键(如 intent:<id> / main / plan)"},
+        "input_tokens": {"type": "integer"},
+        "output_tokens": {"type": "integer"},
+        "cache_read_tokens": {"type": "integer"},
+        "cache_write_tokens": {"type": "integer"}
+      }
+    },
+    "TokenTotal": {
+      "type": "object",
+      "description": "全任务(所有 Agent)token 总合计。",
+      "required": ["input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"],
+      "properties": {
+        "input_tokens": {"type": "integer"},
+        "output_tokens": {"type": "integer"},
+        "cache_read_tokens": {"type": "integer"},
+        "cache_write_tokens": {"type": "integer"}
+      }
+    },
+    "TokenStatsResult": {
+      "type": "object",
+      "description": "任务 token 用量统计结果。",
+      "required": ["workers", "sessions", "total"],
+      "properties": {
+        "workers": {"type": "array", "items": {"$ref": "#/components/schemas/TokenUsage"}},
+        "sessions": {"type": "array", "items": {"$ref": "#/components/schemas/SessionTokenUsage"}},
+        "total": {"$ref": "#/components/schemas/TokenTotal"}
+      }
+    },
+    "TrafficRef": {
+      "type": "object",
+      "description": "待绑定的流量引用(POST /traffic 的请求元素)。",
+      "required": ["traffic_id"],
+      "properties": {
+        "traffic_id": {"type": "string", "description": "流量交换 id(流量记录中的 id)"},
+        "role": {"type": "string", "enum": ["baseline", "proof", "verification", "supporting"], "description": "流量用途:基线/证明/验证/辅助;缺省 supporting"},
+        "note": {"type": "string", "description": "备注"}
+      }
+    },
+    "TrafficBindRequest": {
+      "type": "object",
+      "description": "绑定流量证据的请求体(上限 1MB)。",
+      "required": ["traffic_refs"],
+      "properties": {
+        "traffic_refs": {"type": "array", "minItems": 1, "items": {"$ref": "#/components/schemas/TrafficRef"}, "description": "至少一条流量引用(按 traffic_id 去重)"}
+      }
+    },
+    "TrafficEditRequest": {
+      "type": "object",
+      "description": "编辑/解绑流量绑定的请求体。version 必填(乐观并发控制)。",
+      "required": ["version"],
+      "properties": {
+        "version": {"type": "integer", "format": "int64", "description": "清单接口返回的当前证据版本号;不匹配返回 409"},
+        "role": {"type": "string", "enum": ["baseline", "proof", "verification", "supporting"], "description": "新用途(PATCH 时可选)"},
+        "note": {"type": "string", "description": "新备注(PATCH 时可选)"}
+      }
+    },
+    "TrafficReorderRequest": {
+      "type": "object",
+      "description": "重排绑定顺序的请求体(PUT /traffic/order)。",
+      "required": ["version", "binding_ids"],
+      "properties": {
+        "version": {"type": "integer", "format": "int64", "description": "清单接口返回的当前证据版本号;不匹配返回 409"},
+        "binding_ids": {"type": "array", "items": {"type": "string"}, "description": "全部绑定 id 的新顺序(字符串形式的全量列表)"}
+      }
+    },
+    "TrafficEvidenceSnapshot": {
+      "type": "object",
+      "description": "流量证据快照。清单/摘要形式不含 req_head/resp_head(详情接口才有)。",
+      "required": ["id", "source_traffic_id", "captured_at", "url", "method", "status", "content_type", "req_hash", "resp_hash", "req_len", "resp_len", "created_at"],
+      "properties": {
+        "id": {"type": "string", "description": "快照 id(内容哈希派生)"},
+        "source_traffic_id": {"type": "string", "description": "来源流量交换 id"},
+        "captured_at": {"type": "integer", "format": "int64", "description": "流量捕获时间(unix 秒)"},
+        "url": {"type": "string", "description": "请求 URL"},
+        "method": {"type": "string", "description": "请求方法"},
+        "status": {"type": "integer", "description": "响应状态码"},
+        "content_type": {"type": "string", "description": "响应 Content-Type"},
+        "req_head": {"type": "string", "description": "请求报文头原文;清单响应中为空省略"},
+        "resp_head": {"type": "string", "description": "响应报文头原文;清单响应中为空省略"},
+        "req_hash": {"type": "string", "description": "请求正文 SHA-256"},
+        "resp_hash": {"type": "string", "description": "响应正文 SHA-256"},
+        "req_len": {"type": "integer", "format": "int64", "description": "请求正文字节数"},
+        "resp_len": {"type": "integer", "format": "int64", "description": "响应正文字节数"},
+        "created_at": {"type": "string", "format": "date-time", "description": "快照创建时间(RFC3339)"}
+      }
+    },
+    "TrafficBinding": {
+      "type": "object",
+      "description": "漏洞与一条流量证据的绑定。id/finding_id 为数字 id 的字符串形式。",
+      "required": ["id", "finding_id", "snapshot_id", "role", "note", "position", "created_at", "snapshot"],
+      "properties": {
+        "id": {"type": "string", "description": "绑定 id(数字的字符串形式)"},
+        "finding_id": {"type": "string", "description": "漏洞 id(数字的字符串形式)"},
+        "snapshot_id": {"type": "string", "description": "指向的证据快照 id"},
+        "role": {"type": "string", "enum": ["baseline", "proof", "verification", "supporting"], "description": "流量用途"},
+        "note": {"type": "string", "description": "备注(可为空字符串)"},
+        "position": {"type": "integer", "description": "展示顺序(可用 PUT /order 调整)"},
+        "created_at": {"type": "string", "format": "date-time", "description": "绑定时间(RFC3339)"},
+        "snapshot": {"$ref": "#/components/schemas/TrafficEvidenceSnapshot"}
+      }
+    },
+    "FindingTraffic": {
+      "type": "object",
+      "description": "漏洞流量证据清单(摘要形式,不含报文头)。",
+      "required": ["finding_id", "version", "report_version", "bindings"],
+      "properties": {
+        "finding_id": {"type": "string", "description": "漏洞 id(数字的字符串形式)"},
+        "version": {"type": "integer", "format": "int64", "description": "证据当前版本号(写操作的乐观并发控制凭据)"},
+        "report_version": {"type": "integer", "format": "int64", "description": "报告引用的证据版本"},
+        "bindings": {"type": "array", "items": {"$ref": "#/components/schemas/TrafficBinding"}, "description": "绑定列表(按 position 排序;可为空数组)"}
+      }
+    },
+    "TrafficEvidencePreview": {
+      "type": "object",
+      "description": "流量报文正文预览(默认前 8192 字节,按 UTF-8 边界截断;二进制时为占位说明)。",
+      "required": ["content", "offset", "total", "next_offset", "truncated", "binary"],
+      "properties": {
+        "content": {"type": "string", "description": "正文文本;二进制正文为「[二进制正文,N 字节;请下载查看]」占位"},
+        "offset": {"type": "integer", "format": "int64", "description": "本段起始字节偏移"},
+        "total": {"type": "integer", "format": "int64", "description": "正文总字节数"},
+        "next_offset": {"type": "integer", "format": "int64", "description": "下一段起始偏移(等于 offset+本段长度)"},
+        "truncated": {"type": "boolean", "description": "后面是否还有内容"},
+        "binary": {"type": "boolean", "description": "是否为二进制正文(含 NUL 或首块非合法 UTF-8)"}
+      }
+    },
+    "TrafficBindingDetail": {
+      "type": "object",
+      "description": "单条流量绑定详情:绑定本身(含完整报文头)+ 两侧正文预览。",
+      "required": ["binding", "request", "response"],
+      "properties": {
+        "binding": {"$ref": "#/components/schemas/TrafficBinding"},
+        "request": {"$ref": "#/components/schemas/TrafficEvidencePreview"},
+        "response": {"$ref": "#/components/schemas/TrafficEvidencePreview"}
+      }
+    }
+  }
+}

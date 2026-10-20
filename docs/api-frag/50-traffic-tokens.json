@@ -1,0 +1,864 @@
+{
+  "paths": {
+    "/api/tokens/daily": {
+      "get": {
+        "tags": ["tokens"],
+        "summary": "全局 Token 按日聚合",
+        "description": "返回过去 days 天内（按 UTC 自然日）所有任务探索的 Token 消耗日聚合。仅统计 kind='result' 的每轮终态汇总行，因此不会重复计数。未启用 PostgreSQL 时返回空数组。",
+        "operationId": "getTokenDailyStats",
+        "parameters": [
+          {
+            "name": "days",
+            "in": "query",
+            "required": false,
+            "description": "聚合天数，默认 30；days<=0 时按 30 处理",
+            "schema": {
+              "type": "integer",
+              "default": 30
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "按日聚合的 Token 消耗数组（无数据时为空数组）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TokenDailyStat"
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "数据库查询失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tokens/conversations": {
+      "get": {
+        "tags": ["tokens"],
+        "summary": "会话级 Token 汇总",
+        "description": "返回每个对话会话的 Token 汇总：对该会话 kind='result' 行求和（含 input/output/cache_read/cache_write）。用于仪表盘把聊天会话用量并入按配置/按日的 Token 统计（这些统计默认只覆盖任务探索用量）。尚无完成轮次的会话各项为 0。未启用 PostgreSQL 时返回空数组。",
+        "operationId": "getConversationTokens",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "每个会话一行的 Token 汇总数组",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TokenConversationSummary"
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "数据库查询失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/tokens/usage": {
+      "get": {
+        "tags": ["tokens"],
+        "summary": "全局 llm_usage 用量聚合",
+        "description": "基于常开的计量账本 llm_usage 做全局聚合（仪表盘新版 Token 视图）：by_profile 为按 LLM 配置名称的累计总量（all-time，最常用在前，未持久化配置/环境变量调用的 profile_name 为空串）；daily 为按（配置, 日）的用量桶，取过去 days 天。数据源为计量账本，因此跨按-agent 绑定、连接池轮换和中断运行都准确。未启用 PostgreSQL 时两组均为空数组。",
+        "operationId": "getTokenUsage",
+        "parameters": [
+          {
+            "name": "days",
+            "in": "query",
+            "required": false,
+            "description": "daily 桶的天数窗口，默认 365；days<=0 时按 365 处理。不影响 by_profile 的全量聚合",
+            "schema": {
+              "type": "integer",
+              "default": 365
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "按配置聚合 + 按日聚合的用量数据",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenUsageResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "数据库查询失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/traffic": {
+      "get": {
+        "tags": ["traffic"],
+        "summary": "流量记录分页列表",
+        "description": "分页返回已记录的 HTTP 交换列表（不含报文体，报文体需调 exchange/blob 接口按需读取）。支持多维过滤：host 子串匹配；method 精确匹配（忽略大小写）；path 为 url_template 的子串匹配（即漏洞路径）；status 支持精确码（如 404）或分类桶（如 4xx）；resp_min/resp_max 过滤响应体长度（-1 表示不启用）；q 为宽搜索框，匹配元数据列（host/url/url_template/method/content_type/status）或捕获文本全文；body 为内容框，仅对捕获的请求/响应文本做全文检索（三元组分词，过短的词会被静默跳过）。size<=0 或 >500 时按 100 处理，page<0 按 0。流量模块未启用时返回 enabled=false 且 exchanges 为空数组。",
+        "operationId": "getTraffic",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "description": "页码，从 0 开始",
+            "schema": {
+              "type": "integer",
+              "default": 0
+            }
+          },
+          {
+            "name": "size",
+            "in": "query",
+            "required": false,
+            "description": "每页条数，默认 100，上限 500（超出按 100 处理）",
+            "schema": {
+              "type": "integer",
+              "default": 100,
+              "maximum": 500
+            }
+          },
+          {
+            "name": "host",
+            "in": "query",
+            "required": false,
+            "description": "host 子串过滤（与页面上 host 筛选框同语义）",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "method",
+            "in": "query",
+            "required": false,
+            "description": "HTTP 方法，精确匹配（忽略大小写），如 GET/POST",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "description": "宽搜索关键字：元数据列 OR 捕获文本全文匹配",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "body",
+            "in": "query",
+            "required": false,
+            "description": "内容搜索关键字：仅全文检索捕获的请求/响应文本（三元组最小长度限制，过短词被跳过）",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "required": false,
+            "description": "url_template（路径模板）的子串过滤",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "description": "状态码过滤：精确码（如 404）或分类（如 4xx）",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "resp_min",
+            "in": "query",
+            "required": false,
+            "description": "响应体最小字节数（resp_len >= 该值），-1 表示不过滤",
+            "schema": {
+              "type": "integer",
+              "default": -1
+            }
+          },
+          {
+            "name": "resp_max",
+            "in": "query",
+            "required": false,
+            "description": "响应体最大字节数（resp_len <= 该值），-1 表示不过滤",
+            "schema": {
+              "type": "integer",
+              "default": -1
+            }
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "required": false,
+            "description": "排序字段",
+            "schema": {
+              "type": "string",
+              "enum": ["ts", "status", "resp_len"],
+              "default": "ts"
+            }
+          },
+          {
+            "name": "order",
+            "in": "query",
+            "required": false,
+            "description": "排序方向（id 作稳定次序键保证分页稳定）",
+            "schema": {
+              "type": "string",
+              "enum": ["asc", "desc"],
+              "default": "desc"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "分页的交换列表与全局统计（模块未启用时 enabled=false 且 exchanges 为空）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrafficListResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": ["traffic"],
+        "summary": "按 host 子串删除流量",
+        "description": "删除 host 包含给定子串的所有已记录交换——与页面 host 筛选框同语义（子串匹配），即\"过滤到什么就删什么\"。一次事务删除索引行、全文索引、各 host 的文件树及 blob 引用，随后对不再被任何交换引用的内容寻址 blob 做垃圾回收。host 为空（或全空白）返回 400。流量模块未启用返回 404。返回删除的交换条数。",
+        "operationId": "deleteTraffic",
+        "parameters": [
+          {
+            "name": "host",
+            "in": "query",
+            "required": true,
+            "description": "host 子串（包含匹配）",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "删除成功，返回删除条数",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrafficDeletedResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "缺少 host 参数",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "流量模块未启用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "删除失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/traffic/hosts": {
+      "get": {
+        "tags": ["traffic"],
+        "summary": "已记录 host 列表",
+        "description": "返回去重后的 host 及各自交换条数，按最近活动时间倒序，用于页面目标选择器（选定 host 过滤列表，再对其删除）。流量模块未启用时返回空 hosts 数组。",
+        "operationId": "getTrafficHosts",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "host 及交换条数列表",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrafficHostsResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "数据库查询失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": ["traffic"],
+        "summary": "按精确 host 批量删除流量",
+        "description": "按精确 host 集合批量删除流量记录（页面多选删除的批量路径）。精确匹配：选 api.example.com 不会连带删除 api.example.com.cn。请求体中的空白 host 项会被忽略；去空白后列表为空返回 400。流量模块未启用返回 404。返回删除的交换条数。",
+        "operationId": "deleteTrafficHosts",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "description": "要删除的精确 host 列表",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TrafficHostsDeleteRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "删除成功，返回删除条数",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrafficDeletedResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求体非法（非 JSON），或去空白后 hosts 为空",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "流量模块未启用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "删除失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/traffic/exchange": {
+      "get": {
+        "tags": ["traffic"],
+        "summary": "单条交换的原始报文",
+        "description": "按 id 返回一条交换的完整原始请求/响应报文（报文体不在分页列表中，按需读取）。req 与 resp 为重建的原始 HTTP 文本（头部 + 空行 + 体）。超出内联阈值而落盘为 blob 的体只带内联预览并追加 \"@blob sha256:<hash>\" 指针，需再调 GET /api/traffic/blob 按哈希取完整内容。报文体入 SQLite 之前的历史记录会改从磁盘目录树读取，保证旧数据可看。",
+        "operationId": "getTrafficExchange",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "query",
+            "required": true,
+            "description": "交换记录 ID（列表项的 id）",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "原始请求/响应报文",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrafficExchangeDetail"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "缺少 id 参数",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "流量模块未启用，或 id 不存在/读取失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/traffic/blob": {
+      "get": {
+        "tags": ["traffic"],
+        "summary": "下载超大报文体 blob",
+        "description": "按 sha256 哈希流式下载一个超大报文体（超出内联阈值的体不随 exchange 返回，而是以 \"@blob sha256:<hash>\" 指针引用）。以 application/octet-stream 二进制流输出（不整块缓存进内存），并带 Content-Length 与 Content-Disposition 附件头（文件名 <hash>.bin）。hash 必须是 64 位十六进制 sha256（内部会统一转小写），非法或不存在均返回 404。流量模块未启用返回 404。",
+        "operationId": "getTrafficBlob",
+        "parameters": [
+          {
+            "name": "hash",
+            "in": "query",
+            "required": true,
+            "description": "blob 的 sha256 哈希（64 位十六进制字符）",
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-fA-F]{64}$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "二进制报文体流（附件下载，文件名 <hash>.bin）",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "缺少 hash 参数",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "流量模块未启用、hash 非法或 blob 不存在",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/traffic/all": {
+      "delete": {
+        "tags": ["traffic"],
+        "summary": "清空全部流量记录",
+        "description": "删除全部已记录交换并压实索引，把腾出的空间真正归还给文件系统（清空后的索引是一次全量重写的唯一廉价时机）。已绑定到 finding 的证据存于 evidence store，被刻意保留不受影响。流量模块未启用返回 404。返回删除的交换条数与回收的索引字节数。",
+        "operationId": "deleteAllTraffic",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "清空成功，返回删除条数与回收的索引字节数",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrafficDeleteAllResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "流量模块未启用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "删除或压实失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "schemas": {
+    "TokenDailyStat": {
+      "type": "object",
+      "description": "按 UTC 自然日聚合的 Token 消耗桶",
+      "required": ["day", "input_tokens", "output_tokens", "cache_read_tokens"],
+      "properties": {
+        "day": {
+          "type": "string",
+          "description": "日期，格式 YYYY-MM-DD（UTC）"
+        },
+        "input_tokens": {
+          "type": "integer",
+          "description": "输入 token 总量"
+        },
+        "output_tokens": {
+          "type": "integer",
+          "description": "输出 token 总量"
+        },
+        "cache_read_tokens": {
+          "type": "integer",
+          "description": "缓存读取 token 总量"
+        }
+      }
+    },
+    "TokenConversationSummary": {
+      "type": "object",
+      "description": "单个会话的 Token 汇总（其 kind='result' 行求和）",
+      "required": ["created_at", "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"],
+      "properties": {
+        "llm_profile_id": {
+          "type": "integer",
+          "format": "int64",
+          "nullable": true,
+          "description": "会话绑定的 LLM 配置 ID，未绑定时为 null"
+        },
+        "created_at": {
+          "type": "string",
+          "description": "会话创建时间（PostgreSQL ::text 输出格式）"
+        },
+        "input_tokens": {
+          "type": "integer",
+          "description": "输入 token 总量"
+        },
+        "output_tokens": {
+          "type": "integer",
+          "description": "输出 token 总量"
+        },
+        "cache_read_tokens": {
+          "type": "integer",
+          "description": "缓存读取 token 总量"
+        },
+        "cache_write_tokens": {
+          "type": "integer",
+          "description": "缓存写入 token 总量"
+        }
+      }
+    },
+    "TokenProfileUsage": {
+      "type": "object",
+      "description": "按 LLM 配置的全局累计用量（all-time）",
+      "required": ["profile_name", "calls", "tasks", "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"],
+      "properties": {
+        "profile_name": {
+          "type": "string",
+          "description": "配置名称；环境变量/未持久化配置的调用为空串"
+        },
+        "calls": {
+          "type": "integer",
+          "description": "调用次数"
+        },
+        "tasks": {
+          "type": "integer",
+          "description": "涉及的不同 task 数"
+        },
+        "input_tokens": {
+          "type": "integer",
+          "description": "输入 token 总量"
+        },
+        "output_tokens": {
+          "type": "integer",
+          "description": "输出 token 总量"
+        },
+        "cache_read_tokens": {
+          "type": "integer",
+          "description": "缓存读取 token 总量"
+        },
+        "cache_write_tokens": {
+          "type": "integer",
+          "description": "缓存写入 token 总量"
+        }
+      }
+    },
+    "TokenProfileDayUsage": {
+      "type": "object",
+      "description": "按（配置, 日）的用量桶",
+      "required": ["profile_name", "date", "input_tokens", "output_tokens", "cache_read_tokens"],
+      "properties": {
+        "profile_name": {
+          "type": "string",
+          "description": "配置名称；环境变量/未持久化配置的调用为空串"
+        },
+        "date": {
+          "type": "string",
+          "description": "日期，格式 YYYY-MM-DD（UTC）"
+        },
+        "input_tokens": {
+          "type": "integer",
+          "description": "输入 token 总量"
+        },
+        "output_tokens": {
+          "type": "integer",
+          "description": "输出 token 总量"
+        },
+        "cache_read_tokens": {
+          "type": "integer",
+          "description": "缓存读取 token 总量"
+        }
+      }
+    },
+    "TokenUsageResponse": {
+      "type": "object",
+      "description": "全局 llm_usage 聚合结果",
+      "required": ["by_profile", "daily"],
+      "properties": {
+        "by_profile": {
+          "type": "array",
+          "description": "按 LLM 配置的累计用量（最常用在前）",
+          "items": {
+            "$ref": "#/components/schemas/TokenProfileUsage"
+          }
+        },
+        "daily": {
+          "type": "array",
+          "description": "按（配置, 日）的用量桶，供按配置+时间范围切片",
+          "items": {
+            "$ref": "#/components/schemas/TokenProfileDayUsage"
+          }
+        }
+      }
+    },
+    "TrafficExchange": {
+      "type": "object",
+      "description": "单条 HTTP 交换的元信息（不含报文体）",
+      "required": ["id", "ts", "host", "method", "url", "status", "content_type", "resp_len"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "交换记录 ID（内嵌捕获时间戳与序号，保证排序稳定）"
+        },
+        "ts": {
+          "type": "string",
+          "description": "捕获时间（RFC3339）"
+        },
+        "host": {
+          "type": "string",
+          "description": "目标主机名"
+        },
+        "method": {
+          "type": "string",
+          "description": "HTTP 方法"
+        },
+        "url": {
+          "type": "string",
+          "description": "实际请求 URL"
+        },
+        "status": {
+          "type": "integer",
+          "description": "HTTP 响应状态码"
+        },
+        "content_type": {
+          "type": "string",
+          "description": "响应 Content-Type"
+        },
+        "resp_len": {
+          "type": "integer",
+          "description": "响应体字节数"
+        }
+      }
+    },
+    "TrafficListResponse": {
+      "type": "object",
+      "description": "流量分页列表与全局统计。模块未启用时仅含 enabled=false 与空 exchanges",
+      "required": ["enabled", "proxy", "count", "total", "page", "size", "exchanges"],
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "流量捕获开关的当前状态"
+        },
+        "proxy": {
+          "type": "string",
+          "description": "代理监听地址"
+        },
+        "count": {
+          "type": "integer",
+          "description": "已记录的交换总数（未过滤，用于统计卡片）"
+        },
+        "total": {
+          "type": "integer",
+          "description": "匹配当前过滤条件的行数（用于分页）"
+        },
+        "page": {
+          "type": "integer",
+          "description": "当前页码"
+        },
+        "size": {
+          "type": "integer",
+          "description": "每页条数"
+        },
+        "exchanges": {
+          "type": "array",
+          "description": "当前页的交换元信息列表",
+          "items": {
+            "$ref": "#/components/schemas/TrafficExchange"
+          }
+        }
+      }
+    },
+    "TrafficHost": {
+      "type": "object",
+      "description": "一个去重后的 host 及其交换条数",
+      "required": ["host", "count"],
+      "properties": {
+        "host": {
+          "type": "string",
+          "description": "主机名"
+        },
+        "count": {
+          "type": "integer",
+          "description": "该 host 的交换记录条数"
+        }
+      }
+    },
+    "TrafficHostsResponse": {
+      "type": "object",
+      "description": "已记录 host 列表（按最近活动倒序）",
+      "required": ["hosts"],
+      "properties": {
+        "hosts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/components/schemas/TrafficHost"
+          }
+        }
+      }
+    },
+    "TrafficExchangeDetail": {
+      "type": "object",
+      "description": "单条交换的完整原始报文",
+      "required": ["req", "resp"],
+      "properties": {
+        "req": {
+          "type": "string",
+          "description": "重建的原始 HTTP 请求文本（头部+空行+体）；超出内联阈值的体为内联预览加 \"@blob sha256:<hash>\" 指针"
+        },
+        "resp": {
+          "type": "string",
+          "description": "重建的原始 HTTP 响应文本（头部+空行+体）；超大体同样以 @blob 指针代替"
+        }
+      }
+    },
+    "TrafficHostsDeleteRequest": {
+      "type": "object",
+      "description": "按精确 host 批量删除的请求体",
+      "required": ["hosts"],
+      "properties": {
+        "hosts": {
+          "type": "array",
+          "minItems": 1,
+          "description": "要删除的精确 host 列表（空白项会被忽略，全部为空则 400）",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "TrafficDeletedResponse": {
+      "type": "object",
+      "description": "删除流量后的结果",
+      "required": ["deleted"],
+      "properties": {
+        "deleted": {
+          "type": "integer",
+          "format": "int64",
+          "description": "删除的交换条数"
+        }
+      }
+    },
+    "TrafficDeleteAllResponse": {
+      "type": "object",
+      "description": "清空全部流量后的结果",
+      "required": ["deleted", "reclaimed"],
+      "properties": {
+        "deleted": {
+          "type": "integer",
+          "format": "int64",
+          "description": "删除的交换条数"
+        },
+        "reclaimed": {
+          "type": "integer",
+          "format": "int64",
+          "description": "索引压实后归还给文件系统的字节数"
+        }
+      }
+    }
+  }
+}

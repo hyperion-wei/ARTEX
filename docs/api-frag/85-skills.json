@@ -1,0 +1,929 @@
+{
+  "paths": {
+    "/api/skills": {
+      "get": {
+        "tags": ["skills"],
+        "summary": "列出全部技能包",
+        "description": "扫描 skills 目录下的全部一级子目录,逐个返回:目录名、SKILL.md frontmatter 元数据(description/license/compatibility/mcps)、完整文件清单(递归含子目录,目录项以尾部 / 结尾)、以及 PostgreSQL skill_usage 台账的调用统计(calls/tasks/usage_agents/last_used)。从未被调用过的技能统计为 0/[] 且 last_used 缺省;台账读取失败只记日志,不影响列表返回。",
+        "operationId": "listSkills",
+        "responses": {
+          "200": {
+            "description": "技能包列表",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "skills": {
+                      "type": "array",
+                      "items": {"$ref": "#/components/schemas/SkillItem"}
+                    }
+                  },
+                  "required": ["skills"]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "读取 skills 目录失败",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      },
+      "post": {
+        "tags": ["skills"],
+        "summary": "新建技能包(脚手架生成 SKILL.md)",
+        "description": "在 skills 目录下创建以 name 命名的子目录,并按 agentskills.io 规范生成 SKILL.md:YAML frontmatter(name、description 必填;license、compatibility、mcps 可选)+ Markdown 指令正文。instructions 提供时原样写入正文,为空时生成带步骤占位的脚手架正文。本接口不涉及 URL/git 安装,zip 包安装请用 POST /api/skills/upload。名称校验:1-64 字符,字母开头(小写字母或中文等非 ASCII 字母),仅允许小写字母/数字/连字符,不能以连字符结尾或出现连续连字符。",
+        "operationId": "createSkill",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/SkillCreateRequest"}
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "创建成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "name": {"type": "string", "description": "新建的技能包名称"}
+                  },
+                  "required": ["name"]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求体非法 / 技能名不合规 / description 为空",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "409": {
+            "description": "同名技能包已存在",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "500": {
+            "description": "创建目录或写入 SKILL.md 失败",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      }
+    },
+    "/api/skills/upload": {
+      "post": {
+        "tags": ["skills"],
+        "summary": "上传 zip 安装技能包",
+        "description": "以 multipart/form-data 上传 .zip 安装技能包。压缩包内必须包含 SKILL.md(位于 zip 根或单层顶层目录下,取最浅者),其所在目录即技能根;技能名优先取 SKILL.md frontmatter 的 name 字段,为空时依次回退顶层目录名、zip 文件名。解压先落临时目录,全部条目校验通过后原子替换安装,失败不会留下半成品。安全限制:请求体(压缩后)不超过 20MB,解压总量不超过 100MB,单文件不超过 20MB,条目数不超过 4000;每个条目路径经 zip-slip 校验(拒绝 ..、绝对路径、非法字符)。压缩方式支持 Store/Deflate/bzip2/Zstandard,拒绝加密包;条目名非 UTF-8 时按 GBK 兜底解码(兼容 Windows 打包中文文件名)。overwrite=true 时覆盖同名技能,否则同名返回 409。",
+        "operationId": "uploadSkillZip",
+        "parameters": [
+          {
+            "name": "overwrite",
+            "in": "query",
+            "required": false,
+            "schema": {"type": "boolean", "default": false},
+            "description": "为 true 时覆盖已存在的同名技能包(默认 false,重名返回 409)"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "file": {
+                    "type": "string",
+                    "format": "binary",
+                    "description": "技能包 zip 文件(压缩后不超过 20MB,须包含 SKILL.md)"
+                  }
+                },
+                "required": ["file"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "安装成功",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/SkillUploadResult"}
+              }
+            }
+          },
+          "400": {
+            "description": "缺少 file 表单字段或请求体超过 20MB / 无法解析为 zip / 压缩包加密或使用不支持的压缩方式 / 未找到 SKILL.md / 技能名非法 / 含非法路径 / 文件数或体积超限",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "409": {
+            "description": "同名技能已存在且未指定 overwrite=true",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "500": {
+            "description": "服务器错误(创建临时目录/解压/落盘/改名失败)",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      }
+    },
+    "/api/skills/{name}": {
+      "delete": {
+        "tags": ["skills"],
+        "summary": "删除技能包",
+        "description": "删除 skills/<name> 整个目录(含全部文件),并先同步清除 PostgreSQL 中该 skill 的全部可见性配置(agent_skill_visibility 表)。需要管理后台数据源在线:PG 未连接时返回 503 且不执行任何删除。",
+        "operationId": "deleteSkill",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {"type": "string"},
+            "description": "技能包名称(skills/ 下目录名,须通过技能名校验)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "删除成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "deleted": {"type": "string", "description": "被删除的技能包名称"}
+                  },
+                  "required": ["deleted"]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "技能名非法",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "500": {
+            "description": "删除数据库可见性记录或目录失败",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      }
+    },
+    "/api/skills/missing": {
+      "get": {
+        "tags": ["skills"],
+        "summary": "缺失技能清单(想调用但不存在)",
+        "description": "从 skill_usage 台账聚合模型点名但磁盘上不存在的 skill(记录 found=false),按请求次数降序返回,即值得优先补写的技能缺口列表。名称来自模型输出,原样展示(入库时已限长)。limit 缺省 20,上限 200;不合法(不大于 0 或超过 200)时回落 20。需 PG 在线。",
+        "operationId": "listMissingSkills",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {"type": "integer", "default": 20, "maximum": 200},
+            "description": "返回条数上限;不大于 0 或超过 200 时按 20 处理"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "缺失技能统计列表(按调用次数降序;tasks 字段恒为 0)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "missing": {
+                      "type": "array",
+                      "items": {"$ref": "#/components/schemas/SkillStat"}
+                    }
+                  },
+                  "required": ["missing"]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "数据库查询失败",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      }
+    },
+    "/api/skills/{name}/usage": {
+      "get": {
+        "tags": ["skills"],
+        "summary": "单个技能的最近调用记录",
+        "description": "返回指定技能最近的成功加载记录(skill_usage 中该 skill 且 found=true 的行),按时间新在前。limit 缺省 50,上限 200;不合法(不大于 0 或超过 200)时回落 50。需 PG 在线。",
+        "operationId": "getSkillUsage",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {"type": "string"},
+            "description": "技能包名称(skills/ 下目录名,须通过技能名校验)"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {"type": "integer", "default": 50, "maximum": 200},
+            "description": "返回条数上限;不大于 0 或超过 200 时按 50 处理"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "最近调用记录列表(新在前)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "calls": {
+                      "type": "array",
+                      "items": {"$ref": "#/components/schemas/SkillCall"}
+                    }
+                  },
+                  "required": ["calls"]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "非法 skill 名",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "500": {
+            "description": "数据库查询失败",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      }
+    },
+    "/api/skills/{name}/meta": {
+      "put": {
+        "tags": ["skills"],
+        "summary": "更新技能元数据(SKILL.md frontmatter)",
+        "description": "重写 SKILL.md frontmatter 中可安全修改的字段(mcps、description、license、compatibility),Markdown 指令正文(闭合 --- 之后)原样保留,frontmatter 中的未知键也保留。仅更新请求中提供的字段:null 或缺省均表示不修改;mcps 传空数组可清除该行(传非空数组则整行替换)。SKILL.md 不存在返回 404;文件无合法 frontmatter(缺失起始/闭合 --- 行)返回 400。",
+        "operationId": "updateSkillMeta",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {"type": "string"},
+            "description": "技能包名称(skills/ 下目录名,须通过技能名校验)"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/SkillMetaUpdateRequest"}
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "更新成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {"type": "boolean", "description": "固定为 true"}
+                  },
+                  "required": ["ok"]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "技能名非法 / 请求体非法 / SKILL.md 无 YAML frontmatter",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "404": {
+            "description": "技能不存在(未找到 SKILL.md)",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "500": {
+            "description": "读取或写入 SKILL.md 失败",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      }
+    },
+    "/api/skills/{name}/dirs": {
+      "post": {
+        "tags": ["skills"],
+        "summary": "创建技能包子目录",
+        "description": "在技能包内创建子目录,可一次创建多级(如 scripts/utils,父级随需自动补齐)。path 须为技能包内合法相对路径:拒绝 ..、前导或重复斜杠、反斜杠、%、#、?、*、冒号、双引号、尖括号、竖线及控制字符,长度不超过 512,允许中文目录名。",
+        "operationId": "createSkillDir",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {"type": "string"},
+            "description": "技能包名称(skills/ 下目录名,须通过技能名校验)"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/SkillDirCreateRequest"}
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "创建成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "dir": {"type": "string", "description": "规范化后的目录相对路径"}
+                  },
+                  "required": ["dir"]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "技能名非法 / 请求体非法 / 目录路径不合规",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "404": {
+            "description": "技能不存在",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "500": {
+            "description": "创建目录失败",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      }
+    },
+    "/api/skills/{name}/files": {
+      "get": {
+        "tags": ["skills"],
+        "summary": "技能包文件树",
+        "description": "返回技能包目录下全部条目的相对路径,递归包含子目录;目录项以尾部 / 结尾,便于前端区分文件与目录并渲染空目录。列表按文件系统遍历顺序输出。",
+        "operationId": "listSkillFiles",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {"type": "string"},
+            "description": "技能包名称(skills/ 下目录名,须通过技能名校验)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "文件/目录相对路径列表(目录项带尾部斜杠)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "files": {
+                      "type": "array",
+                      "items": {"type": "string"}
+                    }
+                  },
+                  "required": ["files"]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "技能名非法",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "404": {
+            "description": "技能不存在",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "500": {
+            "description": "遍历目录失败",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      }
+    },
+    "/api/skills/{name}/files/{file}": {
+      "get": {
+        "tags": ["skills"],
+        "summary": "读取技能包内文件",
+        "description": "读取技能包内指定文件的内容。响应为 JSON 包装:content 为文件全文文本(按 UTF-8 字符串返回,二进制文件会出现替换字符),file 为规范化后的相对路径。{file} 为多级嵌套路径(如 scripts/extract.py),须通过相对路径校验:拒绝 ..、前导或重复斜杠、反斜杠、%、#、?、*、冒号、双引号、尖括号、竖线及控制字符,长度不超过 512,允许中文文件名。",
+        "operationId": "readSkillFile",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {"type": "string"},
+            "description": "技能包名称(skills/ 下目录名,须通过技能名校验)"
+          },
+          {
+            "name": "file",
+            "in": "path",
+            "required": true,
+            "schema": {"type": "string"},
+            "description": "技能包内相对路径;为多级嵌套路径(如 scripts/extract.py),路由通配 {file...} 捕获含斜杠的整段;校验规则见接口说明"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "文件内容(JSON 包装)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "content": {"type": "string", "description": "文件全文文本"},
+                    "file": {"type": "string", "description": "规范化后的相对路径"}
+                  },
+                  "required": ["content", "file"]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "技能名或文件路径非法",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "404": {
+            "description": "文件不存在",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "500": {
+            "description": "读取文件失败",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      },
+      "put": {
+        "tags": ["skills"],
+        "summary": "写入技能包内文件",
+        "description": "整体写入(新建或覆盖)技能包内指定文件;父级子目录(如 scripts/)不存在时自动创建。请求体为 JSON:content 为文件全文,整体覆盖而非追加。技能目录不存在返回 404,目标文件本身不存在则直接创建。{file} 为多级嵌套路径(如 scripts/extract.py),校验规则同读取接口。",
+        "operationId": "writeSkillFile",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {"type": "string"},
+            "description": "技能包名称(skills/ 下目录名,须通过技能名校验)"
+          },
+          {
+            "name": "file",
+            "in": "path",
+            "required": true,
+            "schema": {"type": "string"},
+            "description": "技能包内相对路径;为多级嵌套路径(如 scripts/extract.py),路由通配 {file...} 捕获含斜杠的整段;拒绝 .. 与非法字符"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/SkillFileWriteRequest"}
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "写入成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {"type": "boolean", "description": "固定为 true"}
+                  },
+                  "required": ["ok"]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "技能名或文件路径非法 / 请求体非法",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "404": {
+            "description": "技能不存在",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "500": {
+            "description": "创建父目录或写入文件失败",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      },
+      "delete": {
+        "tags": ["skills"],
+        "summary": "删除技能包内文件或目录",
+        "description": "删除技能包内指定文件或目录(目录递归删除全部内容)。路径不存在返回 404。{file} 为多级嵌套路径(如 scripts/extract.py),校验规则同读取接口。",
+        "operationId": "deleteSkillFile",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {"type": "string"},
+            "description": "技能包名称(skills/ 下目录名,须通过技能名校验)"
+          },
+          {
+            "name": "file",
+            "in": "path",
+            "required": true,
+            "schema": {"type": "string"},
+            "description": "技能包内相对路径;为多级嵌套路径(如 scripts/extract.py),路由通配 {file...} 捕获含斜杠的整段;拒绝 .. 与非法字符"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "删除成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "deleted": {"type": "string", "description": "被删除的相对路径(文件或目录)"}
+                  },
+                  "required": ["deleted"]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "技能名或路径非法",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "404": {
+            "description": "路径不存在",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "500": {
+            "description": "删除失败",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      }
+    },
+    "/api/visibility/{kind}/{id}": {
+      "get": {
+        "tags": ["visibility"],
+        "summary": "查询资源的可见 agent 列表",
+        "description": "返回当前能看到指定 MCP 资源的全部 agent ID(字符串形式,取 agent_visibility 表 enabled 行)。kind 当前仅支持 mcp:数据库 CHECK 约束为 resource_kind IN ('mcp');skill 可见性按名称走更具体的 /api/visibility/skill/{name} 路由(优先匹配,不会进入本接口)。kind 传其他值不报错,通常返回空列表;{id} 非数字时按 0 处理,同样返回空列表。需 PG 在线。",
+        "operationId": "getResourceVisibility",
+        "parameters": [
+          {
+            "name": "kind",
+            "in": "path",
+            "required": true,
+            "schema": {"type": "string", "enum": ["mcp"]},
+            "description": "资源类型,当前仅支持 mcp"
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {"type": "integer", "format": "int64"},
+            "description": "资源数字 ID(如 MCP 服务器 ID);非数字值按 0 处理"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "可见该资源的 agent ID 字符串列表",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "agents": {
+                      "type": "array",
+                      "items": {"type": "string"},
+                      "description": "agent 数字 ID 的字符串形式"
+                    }
+                  },
+                  "required": ["agents"]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "数据库查询失败",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      }
+    },
+    "/api/visibility/toggle": {
+      "post": {
+        "tags": ["visibility"],
+        "summary": "切换 agent 对 MCP 资源的可见性",
+        "description": "开关指定 agent 对某 MCP 资源的可见性,幂等:visible=true 插入或启用对应 agent_visibility 行;false 删除该行。与 GET /api/visibility/{kind}/{id}(资源侧视图)及 agent 侧 PUT /api/agents/{key}/visibility 读写同一批数据。需 PG 在线。",
+        "operationId": "toggleResourceVisibility",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/VisibilityToggleRequest"}
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "切换成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {"type": "boolean", "description": "固定为 true"}
+                  },
+                  "required": ["ok"]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求体非法",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "500": {
+            "description": "数据库写入失败",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      }
+    },
+    "/api/visibility/skill/{name}": {
+      "get": {
+        "tags": ["visibility"],
+        "summary": "查询技能的可见 agent 列表",
+        "description": "返回当前能看到指定技能包的全部 agent ID(字符串形式,取 agent_skill_visibility 表该 skill 的 enabled 行)。按名称匹配,无需技能在磁盘存在:不存在或无授权时返回空列表而非 404。需 PG 在线。",
+        "operationId": "getSkillVisibility",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {"type": "string"},
+            "description": "技能包名称(skills/ 下目录名;本接口不做名称格式校验)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "可见该技能的 agent ID 字符串列表",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "agents": {
+                      "type": "array",
+                      "items": {"type": "string"},
+                      "description": "agent 数字 ID 的字符串形式"
+                    }
+                  },
+                  "required": ["agents"]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "数据库查询失败",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      }
+    },
+    "/api/visibility/skill/toggle": {
+      "post": {
+        "tags": ["visibility"],
+        "summary": "切换 agent 对技能的可见性",
+        "description": "开关指定 agent 对某技能包的可见性,幂等:visible=true 插入或启用对应 agent_skill_visibility 行;false 删除该行。与 GET /api/visibility/skill/{name} 及 agent 侧 PUT /api/agents/{key}/visibility(skill 数组整体替换)读写同一批数据。需 PG 在线。",
+        "operationId": "toggleSkillVisibility",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/SkillVisibilityToggleRequest"}
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "切换成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {"type": "boolean", "description": "固定为 true"}
+                  },
+                  "required": ["ok"]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求体非法",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "500": {
+            "description": "数据库写入失败",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          },
+          "503": {
+            "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+          }
+        }
+      }
+    }
+  },
+  "schemas": {
+    "SkillItem": {
+      "type": "object",
+      "description": "技能包条目(fsListSkills 返回,skills 目录一级子目录)",
+      "properties": {
+        "name": {"type": "string", "description": "技能包名称(skills/ 下目录名)"},
+        "description": {"type": "string", "description": "SKILL.md frontmatter 的技能描述(未配置时缺省)"},
+        "license": {"type": "string", "description": "SKILL.md frontmatter 的许可证(未配置时缺省)"},
+        "compatibility": {"type": "string", "description": "SKILL.md frontmatter 的兼容性说明(未配置时缺省)"},
+        "mcps": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "技能加载时解锁的 MCP 服务器名列表(未配置时缺省)"
+        },
+        "files": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "包内全部条目的相对路径(递归含子目录;目录项以尾部 / 结尾)"
+        },
+        "calls": {"type": "integer", "description": "累计成功加载数(台账无记录时为 0)"},
+        "tasks": {"type": "integer", "description": "加载过该技能的任务数(去重,不含会话)"},
+        "usage_agents": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "加载过该技能的 agent key 列表(最常用在前)"
+        },
+        "last_used": {"type": "string", "format": "date-time", "description": "最近一次调用时间(从未调用时缺省)"}
+      },
+      "required": ["name", "files", "calls", "tasks", "usage_agents"]
+    },
+    "SkillStat": {
+      "type": "object",
+      "description": "skill 调用聚合统计(db.SkillStat)",
+      "properties": {
+        "skill": {"type": "string", "description": "skill 名称(目录名)"},
+        "calls": {"type": "integer", "description": "调用/请求次数"},
+        "tasks": {"type": "integer", "description": "涉及任务数(缺失清单接口恒为 0)"},
+        "agents": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "调用过该 skill 的 agent key 列表"
+        },
+        "last_used": {"type": "string", "format": "date-time", "description": "最近调用时间(无记录时缺省)"}
+      },
+      "required": ["skill", "calls", "tasks", "agents"]
+    },
+    "SkillCall": {
+      "type": "object",
+      "description": "单条 skill 最近调用记录(db.SkillCall)",
+      "properties": {
+        "ts": {"type": "string", "format": "date-time", "description": "调用时间"},
+        "agent_key": {"type": "string", "description": "调用方 agent key(worker/planner/mainagent/自定义 agent)"},
+        "task_id": {"type": "integer", "format": "int64", "description": "任务 ID,非任务运行(会话)为 0"},
+        "session_id": {"type": "string", "description": "会话 ID,任务运行为空字符串"},
+        "args_len": {"type": "integer", "description": "调用参数文本长度(不存参数原文)"}
+      },
+      "required": ["ts", "agent_key", "task_id", "session_id", "args_len"]
+    },
+    "SkillCreateRequest": {
+      "type": "object",
+      "description": "新建技能包请求(fsCreateSkill)",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "技能名称(即目录名):1-64 字符,字母开头,仅小写字母/数字/连字符(或中文等非 ASCII 字母),不能以连字符结尾或出现连续连字符"
+        },
+        "description": {"type": "string", "description": "技能描述(必填,写入 frontmatter)"},
+        "license": {"type": "string", "description": "许可证(可选)"},
+        "compatibility": {"type": "string", "description": "兼容性说明(可选)"},
+        "mcps": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "技能加载时解锁的 MCP 服务器列表(可选)"
+        },
+        "instructions": {"type": "string", "description": "Markdown 指令正文(可选;为空时生成脚手架正文)"}
+      },
+      "required": ["name", "description"]
+    },
+    "SkillMetaUpdateRequest": {
+      "type": "object",
+      "description": "更新 SKILL.md 元数据请求(fsUpdateSkillMeta):仅更新提供的字段,null 或缺省均表示不修改",
+      "properties": {
+        "mcps": {
+          "type": "array",
+          "items": {"type": "string"},
+          "nullable": true,
+          "description": "MCP 服务器列表;传空数组清除 mcps 行,传 null或缺省不修改"
+        },
+        "description": {"type": "string", "nullable": true, "description": "技能描述;null或缺省不修改"},
+        "license": {"type": "string", "nullable": true, "description": "许可证;null或缺省不修改"},
+        "compatibility": {"type": "string", "nullable": true, "description": "兼容性说明;null或缺省不修改"}
+      }
+    },
+    "SkillDirCreateRequest": {
+      "type": "object",
+      "description": "创建技能包子目录请求(fsCreateDir)",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "要创建的目录相对路径(可多级,如 scripts/utils;须为合法相对路径,拒绝 .. 等)"
+        }
+      },
+      "required": ["path"]
+    },
+    "SkillFileWriteRequest": {
+      "type": "object",
+      "description": "写入技能包文件请求(fsWriteFile)",
+      "properties": {
+        "content": {"type": "string", "description": "文件全文内容(整体覆盖,非追加)"}
+      },
+      "required": ["content"]
+    },
+    "SkillUploadResult": {
+      "type": "object",
+      "description": "zip 上传安装结果(fsUploadSkill)",
+      "properties": {
+        "name": {"type": "string", "description": "安装后的技能包名称(取自 SKILL.md frontmatter,回退顶层目录名/zip 文件名)"},
+        "files": {"type": "integer", "description": "解压写入的文件条目数"}
+      },
+      "required": ["name", "files"]
+    },
+    "VisibilityToggleRequest": {
+      "type": "object",
+      "description": "MCP 资源可见性开关请求(pgToggleVisibility)",
+      "properties": {
+        "agent_id": {
+          "type": "string",
+          "pattern": "^[0-9]+$",
+          "description": "Agent 数字 ID,以 JSON 字符串形式传输(如 \"3\")"
+        },
+        "kind": {"type": "string", "enum": ["mcp"], "description": "资源类型,当前仅支持 mcp"},
+        "resource_id": {"type": "integer", "format": "int64", "description": "资源数字 ID(如 MCP 服务器 ID)"},
+        "visible": {"type": "boolean", "description": "true 开启(插入/启用,幂等);false 关闭(删除对应行)"}
+      },
+      "required": ["agent_id", "kind", "resource_id", "visible"]
+    },
+    "SkillVisibilityToggleRequest": {
+      "type": "object",
+      "description": "技能可见性开关请求(pgToggleSkillVisibility)",
+      "properties": {
+        "agent_id": {
+          "type": "string",
+          "pattern": "^[0-9]+$",
+          "description": "Agent 数字 ID,以 JSON 字符串形式传输(如 \"3\")"
+        },
+        "skill_name": {"type": "string", "description": "技能包名称(skills/ 下目录名)"},
+        "visible": {"type": "boolean", "description": "true 开启(插入/启用,幂等);false 关闭(删除对应行)"}
+      },
+      "required": ["agent_id", "skill_name", "visible"]
+    }
+  }
+}
