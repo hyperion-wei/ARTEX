@@ -67,3 +67,7 @@ Thumbs.db
 /bench/
 /Dockerfile.bench
 /Dockerfile.bench.v2
+
+# 接口文档的本地导出压缩包：内容都是 docs/openapi.json、docs/swagger.html 与
+# gen-integration-docx.py 产物的打包，重复入库只会让仓库变大且必然过期
+/artex接口文档.zip
