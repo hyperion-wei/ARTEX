@@ -649,6 +649,9 @@ func (t *ToolSet) WorkerTools() []actool.CoreTool {
 		// asset management (handlers guard nil store internally)。
 		// add_company_scope 不给 worker：定义企业资产范围属规划/主控/Auto 的职责，worker 只执行探索。
 		t.insertAssets(), t.listAssets(),
+		// 鉴权档案：worker 是真正发请求的人，401/403、Authorization、Cookie 里的登录态
+		// 都只有它当场看得到，所以写档案给它；list 同时给，便于先查后写避免覆盖已有结论。
+		t.recordEndpointAuth(), t.listEndpointAuth(),
 		// 跨 work 回看：worker 也可复用其他 work 的观察，避免重复劳动。
 		// search_all_worker_traces：不必先知道 intent_id，按关键字全局捞命中步骤；
 		// get_worker_trace：锁定某条 work 后列步骤/就地搜/取完整内容。
@@ -674,6 +677,7 @@ func (t *ToolSet) MainAgentTools() []actool.CoreTool {
 		t.setConstraints(),
 		// asset management (handlers guard nil store internally)
 		t.insertAssets(), t.addCompanyScope(), t.listAssets(),
+		t.recordEndpointAuth(), t.listEndpointAuth(),
 		t.addFinding(), t.recordFact(),
 		t.addTaskScope(),
 		// list_untested_assets：按需查本任务范围内未测资产(类型+分页)，自行决定补测。

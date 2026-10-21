@@ -231,8 +231,12 @@ type Manager struct {
 	mu          sync.RWMutex
 	tasks       map[string]*Task
 	active      string
-	trafficOn   bool // 流量捕获开关（默认关；settings.traffic_capture）
-	llmRecOn    bool // LLM 录制开关（默认关；settings.llm_record）
+	// selfListen 是本进程 HTTP 服务端的监听地址（由 main 在创建 server 后告知）。被动
+	// 代理不允许挪到这个端口：Windows 上两个监听可以并存，代理会把平台自己的 API 整个
+	// 遮住，而该配置又是持久化的——不挡住就会每次重启自锁一次。
+	selfListen string
+	trafficOn  bool // 流量捕获开关（默认关；settings.traffic_capture）
+	llmRecOn   bool // LLM 录制开关（默认关；settings.llm_record）
 	// 联网搜索开关与来源（默认关；settings.web_search_*）。brave-free 需要 braveKey；tavily 需要 tavilyKey。
 	// webSearchProxy 是独立出口代理(http/https/socks5)，与记录流量的 MITM 代理无关。
 	webSearchOn      bool
@@ -251,11 +255,17 @@ type Manager struct {
 const (
 	settingTrafficCapture      = "traffic_capture"
 	settingAgentTrafficBinding = "agent_traffic_binding"
-	settingWebSearchOn         = "web_search_enabled"
-	settingWebSearchBackend    = "web_search_backend"
-	settingBraveKey            = "brave_search_api_key"
-	settingTavilyKey           = "tavily_search_api_key"
-	settingWebSearchProxy      = "web_search_proxy"
+	// 被动代理（给人用的第二个监听）的入口策略：监听地址、代理认证账号口令、域名白名单。
+	// 只作用于被动实例；Agent 用的内部代理地址始终由启动参数 -proxy 决定，不受这里影响。
+	settingProxyListen      = "traffic_proxy_listen"
+	settingProxyUser        = "traffic_proxy_user"
+	settingProxyPass        = "traffic_proxy_pass"
+	settingProxyAllowlist   = "traffic_proxy_allowlist"
+	settingWebSearchOn      = "web_search_enabled"
+	settingWebSearchBackend = "web_search_backend"
+	settingBraveKey         = "brave_search_api_key"
+	settingTavilyKey        = "tavily_search_api_key"
+	settingWebSearchProxy   = "web_search_proxy"
 	// settingGlobalProxy is the global egress proxy for all target traffic
 	// (http/https/socks5). Empty = direct. Distinct from web_search_proxy (which
 	// only routes the search backend) and the per-profile LLM proxy.
@@ -438,6 +448,9 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 		if err := m.traffic.SetUpstreamProxy(m.globalProxy); err != nil {
 			log.Printf("[proxy] 全局代理 %q 无效，已忽略: %v", m.globalProxy, err)
 		}
+		// 把页面上配过的被动代理（端口/密码/白名单）装回去。它们只作用于被动实例，
+		// Agent 用的内部代理不受影响；起不来也只记日志，不阻断启动。
+		m.applyProxyGuard()
 	}
 	m.enrich = enrich.New(m.assets, m.ProxyAddr, 4)
 	// Reconcile the seeded browser MCP with the persisted capture state, so a

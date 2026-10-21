@@ -100,6 +100,9 @@ func run() int {
 		log.Fatalf("open stores: %v", err)
 	}
 	defer mgr.Close()
+	// 告知本进程的 HTTP 监听地址：被动代理不允许占用同一个端口（Windows 上两者能并存，
+	// 代理会把平台自己的 API 整个遮住），上一次运行留下的冲突配置也在这里自愈。
+	mgr.SetSelfListen(*addr)
 
 	// Surviving this long means a freshly swapped-in build actually works, so drop
 	// the upgrade marker and stop counting attempts. Until it fires, every boot

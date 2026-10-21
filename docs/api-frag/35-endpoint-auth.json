@@ -1,0 +1,250 @@
+{
+  "paths": {
+    "/api/endpoint-auth": {
+      "get": {
+        "tags": ["assets"],
+        "summary": "查询接口鉴权档案",
+        "description": "读取 endpoint_auth 表的接口鉴权档案,三种互斥模式按此优先级判定:missing=1 优先,其次 ids,最后 asset_id。missing=1 返回「需要鉴权但还没拿到凭据」的待办清单(按更新时间倒序,limit 默认 50、上限 500);ids 为逗号分隔的资产 ID 列表,一次批量取回(供资产列表一页一次);asset_id 查单条,该资产从未登记过档案时 auth 返回 null 而非 404,因为「未登记」是常态。三种模式响应结构不同,见 200 的 oneOf。",
+        "operationId": "getEndpointAuth",
+        "parameters": [
+          {
+            "name": "asset_id",
+            "in": "query",
+            "required": false,
+            "description": "单条查询的资产 ID(>0 生效);三者皆空返回 400",
+            "schema": { "type": "integer", "format": "int64" }
+          },
+          {
+            "name": "ids",
+            "in": "query",
+            "required": false,
+            "description": "逗号分隔的资产 ID 列表(如 1,2,3),非正整数返回 400",
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "missing",
+            "in": "query",
+            "required": false,
+            "description": "值为 1 时只列「需鉴权但缺凭据」的接口",
+            "schema": { "type": "string", "enum": ["1"] }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "missing 模式最多返回条数,<=0 或 >500 按 50 处理",
+            "schema": { "type": "integer", "default": 50, "maximum": 500 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "按查询模式返回三种结构之一",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    { "$ref": "#/components/schemas/EndpointAuthSingleResponse" },
+                    { "$ref": "#/components/schemas/EndpointAuthListResponse" },
+                    { "$ref": "#/components/schemas/EndpointAuthMissingResponse" }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "参数缺失或 ids 含非正整数",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "503": {
+            "description": "数据库不可用",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      },
+      "post": {
+        "tags": ["assets"],
+        "summary": "新增或覆盖接口鉴权档案",
+        "description": "按 asset_id 新增或整体覆盖一份鉴权档案(主键即 asset_id,一个接口只有一份)。has_credential 由服务端推导:显式传 true 或 credential 非空即为 true,避免填了凭据却漏置位导致档案自相矛盾;needs_auth=false 时 verified 会被强制收敛为 false。auth_kind 与 source 做白名单校验,非法值返回 400 而不是撞数据库 CHECK 约束。credential 明文入库(与流量库、LLM 录制库同一留存口径),前端默认掩码显示。成功返回回读后的最终档案,便于拿到服务端推导出的字段。",
+        "operationId": "saveEndpointAuth",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/EndpointAuthInput" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "保存后的最终档案",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/EndpointAuth" } }
+            }
+          },
+          "400": {
+            "description": "asset_id 缺失/非正、auth_kind 或 source 非法、目标资产不存在",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "503": {
+            "description": "数据库不可用",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      },
+      "delete": {
+        "tags": ["assets"],
+        "summary": "删除接口鉴权档案",
+        "description": "删除某资产的鉴权档案,供页面「清空重填」使用。资产本身被删除时由外键 ON DELETE CASCADE 自动带走,无需先删档案。幂等:档案不存在也返回成功。",
+        "operationId": "deleteEndpointAuth",
+        "parameters": [
+          {
+            "name": "asset_id",
+            "in": "query",
+            "required": true,
+            "description": "目标资产 ID(>0)",
+            "schema": { "type": "integer", "format": "int64" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "删除成功",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/EndpointAuthDeleteResponse" } }
+            }
+          },
+          "400": {
+            "description": "asset_id 缺失或非正整数",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "503": {
+            "description": "数据库不可用",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    }
+  },
+  "schemas": {
+    "EndpointAuthKind": {
+      "type": "string",
+      "enum": ["none", "basic", "bearer", "jwt", "api_key", "cookie", "session", "signature", "oauth", "unknown"],
+      "description": "鉴权类型;空值按 unknown 处理"
+    },
+    "EndpointAuthSource": {
+      "type": "string",
+      "enum": ["manual", "ai", "traffic"],
+      "description": "档案来源:人工登记 / AI 工具回写 / 流量提取"
+    },
+    "EndpointAuthField": {
+      "type": "object",
+      "description": "一个被识别出来的鉴权字段(鉴权信息藏在哪儿)",
+      "properties": {
+        "name": { "type": "string", "description": "字段名,如 Authorization / token / PHPSESSID" },
+        "where": {
+          "type": "string",
+          "enum": ["header", "query", "body", "cookie"],
+          "description": "出现位置;入库前会被转成小写并去空格"
+        },
+        "kind": { "type": "string", "description": "该字段的鉴权类型(可选)" }
+      },
+      "required": ["name", "where"]
+    },
+    "EndpointAuthAccount": {
+      "type": "object",
+      "description": "账号口令型凭据(basic / 表单登录)",
+      "properties": {
+        "username": { "type": "string", "description": "账号" },
+        "password": { "type": "string", "description": "口令,明文存放" }
+      }
+    },
+    "EndpointAuthCredential": {
+      "type": "object",
+      "description": "可直接用于复放请求的凭据集合。明文入库,前端默认收起、需显式展开才渲染明文",
+      "properties": {
+        "headers": { "type": "object", "additionalProperties": { "type": "string" }, "description": "请求头键值,如 {\"Authorization\":\"Bearer xxx\"}" },
+        "cookies": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Cookie 键值" },
+        "params": { "type": "object", "additionalProperties": { "type": "string" }, "description": "URL/表单参数键值" },
+        "account": { "$ref": "#/components/schemas/EndpointAuthAccount" },
+        "raw": { "type": "string", "description": "整段凭据原文(不便拆成键值时用,如完整 Cookie 串)" }
+      }
+    },
+    "EndpointAuth": {
+      "type": "object",
+      "description": "接口鉴权档案一行:这个接口要不要鉴权、鉴权字段藏在哪、我们手上有没有可用凭据",
+      "properties": {
+        "asset_id": { "type": "integer", "format": "int64", "description": "所属资产 ID(主键,外键指向 assets)" },
+        "needs_auth": { "type": "boolean", "description": "是否需要鉴权;false 表示已确认公开可访问" },
+        "auth_kind": { "$ref": "#/components/schemas/EndpointAuthKind" },
+        "has_credential": { "type": "boolean", "description": "是否已拿到鉴权信息;服务端按 credential 内容推导" },
+        "verified": { "type": "boolean", "description": "凭据是否被实际请求验证过可用;needs_auth=false 时恒为 false" },
+        "fields": {
+          "type": "array",
+          "items": { "$ref": "#/components/schemas/EndpointAuthField" },
+          "description": "识别出的鉴权字段;无数据时为空数组"
+        },
+        "credential": { "$ref": "#/components/schemas/EndpointAuthCredential" },
+        "source": { "$ref": "#/components/schemas/EndpointAuthSource" },
+        "confidence": { "type": "number", "format": "float", "description": "0-1 置信度(AI 判断用;float4 存储,回显可能有精度尾差)" },
+        "note": { "type": "string", "description": "备注(判断依据、凭据来源、有效期限制等)" },
+        "updated_by": { "type": "string", "description": "最后修改者署名" },
+        "created_at": { "type": "string", "format": "date-time", "description": "创建时间" },
+        "updated_at": { "type": "string", "format": "date-time", "description": "更新时间(由触发器维护)" },
+        "url": { "type": "string", "description": "只读:查询时 LEFT JOIN assets 带出的接口地址" },
+        "method": { "type": "string", "description": "只读:查询时带出的请求方法" }
+      },
+      "required": ["asset_id", "needs_auth", "auth_kind", "has_credential", "verified", "fields", "credential", "source", "confidence"]
+    },
+    "EndpointAuthInput": {
+      "type": "object",
+      "description": "POST /api/endpoint-auth 请求体。时间戳由服务端生成,url/method 是查询侧 JOIN 出来的只读列,均不需要提供",
+      "properties": {
+        "asset_id": { "type": "integer", "format": "int64", "description": "目标资产 ID,必须已存在于 assets 表" },
+        "needs_auth": { "type": "boolean", "description": "是否需要鉴权" },
+        "auth_kind": { "$ref": "#/components/schemas/EndpointAuthKind" },
+        "has_credential": { "type": "boolean", "description": "可省略;credential 非空时服务端自动置 true" },
+        "verified": { "type": "boolean", "description": "凭据是否已实测可用" },
+        "fields": { "type": "array", "items": { "$ref": "#/components/schemas/EndpointAuthField" } },
+        "credential": { "$ref": "#/components/schemas/EndpointAuthCredential" },
+        "source": { "$ref": "#/components/schemas/EndpointAuthSource" },
+        "confidence": { "type": "number", "format": "float", "description": "0-1" },
+        "note": { "type": "string", "description": "备注;空串按未设置处理" },
+        "updated_by": { "type": "string", "description": "留空时按 source 给默认署名(ai 或 manual)" }
+      },
+      "required": ["asset_id", "needs_auth"]
+    },
+    "EndpointAuthSingleResponse": {
+      "type": "object",
+      "description": "asset_id 单查响应",
+      "properties": {
+        "auth": {
+          "allOf": [{ "$ref": "#/components/schemas/EndpointAuth" }],
+          "nullable": true,
+          "description": "该资产的档案;从未登记过则为 null"
+        }
+      },
+      "required": ["auth"]
+    },
+    "EndpointAuthListResponse": {
+      "type": "object",
+      "description": "ids 批量查询响应;没有档案的 ID 不会出现在 items 里",
+      "properties": {
+        "items": { "type": "array", "items": { "$ref": "#/components/schemas/EndpointAuth" } }
+      },
+      "required": ["items"]
+    },
+    "EndpointAuthMissingResponse": {
+      "type": "object",
+      "description": "missing=1 待办清单响应:需要鉴权但还没拿到凭据的接口",
+      "properties": {
+        "items": { "type": "array", "items": { "$ref": "#/components/schemas/EndpointAuth" } },
+        "count": { "type": "integer", "description": "本次返回条数(受 limit 约束,不是全库总数)" }
+      },
+      "required": ["items", "count"]
+    },
+    "EndpointAuthDeleteResponse": {
+      "type": "object",
+      "properties": { "ok": { "type": "boolean" } },
+      "required": ["ok"]
+    }
+  }
+}

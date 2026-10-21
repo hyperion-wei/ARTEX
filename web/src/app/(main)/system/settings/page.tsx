@@ -16,6 +16,7 @@ import { CHAT_SEND_MODE_OPTIONS, type ChatSendMode, setChatSendMode, useChatSend
 import type { Settings } from "@/lib/types";
 
 import { UpdateCard } from "./_components/update-card";
+import { PassiveProxyCard } from "./_components/passive-proxy-card";
 
 export default function SystemSettingsPage() {
   const [trafficCapture, setTrafficCapture] = React.useState(false);
@@ -294,6 +295,8 @@ export default function SystemSettingsPage() {
             />
           </CardContent>
         </Card>
+
+        <PassiveProxyCard />
 
         <Card className="mb-4 break-inside-avoid md:mb-6">
           <CardHeader>

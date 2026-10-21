@@ -14,6 +14,11 @@ import type {
   AgentTrigger,
   ArchiveBatchItem,
   Asset,
+  AssetInsert,
+  AssetInsertResult,
+  EndpointAuth,
+  EndpointAuthInput,
+  ProxyGuard,
   AssetInterceptRule,
   AssetInterceptRuleInput,
   Audit,
@@ -487,6 +492,20 @@ export const api = {
     get<Record<string, number>>(`/assets/counts${taskId ? `?task_id=${encodeURIComponent(taskId)}` : ""}`),
   deleteAssets: (ids: number[]) =>
     http<{ deleted: number }>("/assets", { method: "DELETE", body: JSON.stringify({ ids }) }),
+  insertAssets: (taskId: number, assets: AssetInsert[]) =>
+    post<AssetInsertResult>("/assets", { task_id: taskId, assets }),
+  // ---- 接口鉴权档案 ----
+  // 没登记过是常态，所以单查返 null 而不是 404；列表页走批量接口，一页一次。
+  endpointAuth: (assetId: number) =>
+    get<{ auth: EndpointAuth | null }>(`/endpoint-auth?asset_id=${assetId}`).then((r) => r.auth ?? null),
+  endpointAuthByIDs: (ids: number[]) =>
+    ids.length === 0
+      ? Promise.resolve([] as EndpointAuth[])
+      : get<{ items: EndpointAuth[] }>(`/endpoint-auth?ids=${ids.join(",")}`).then((r) => arr(r.items)),
+  endpointAuthMissing: (limit = 50) =>
+    get<{ items: EndpointAuth[] }>(`/endpoint-auth?missing=1&limit=${limit}`).then((r) => arr(r.items)),
+  saveEndpointAuth: (payload: EndpointAuthInput) => post<EndpointAuth>("/endpoint-auth", payload),
+  deleteEndpointAuth: (assetId: number) => del<{ ok: boolean }>(`/endpoint-auth?asset_id=${assetId}`),
   // task-scoped view of the same endpoint — server-side paginated like `assets`
   taskAssets: (taskId: string, type = "", limit = 50, offset = 0) =>
     get<{ count: number; total: number; assets: Asset[] }>(
@@ -810,6 +829,36 @@ export const api = {
   // index handed back to the filesystem. Evidence bound to findings is kept.
   trafficDeleteAll: () => del<{ deleted: number; reclaimed: number }>(`/traffic/all`),
 
+  // ---- 被动代理入口策略（监听地址 / 代理认证 / 域名白名单）----
+  trafficProxy: () => get<ProxyGuard>(`/traffic/proxy`),
+  setTrafficProxy: (payload: { listen: string; user: string; pass: string; allow_text: string }) =>
+    post<{ ok: boolean; proxy: ProxyGuard; note?: string }>("/traffic/proxy", payload),
+  // 根证书下载：链接式直下带不上 JWT，所以 fetch 成 blob 再交给 <a download>。
+  downloadTrafficCA: async () => {
+    if (MOCK) {
+      throw new Error("demo 模式没有本地代理，拿不到 CA 证书");
+    }
+    const token = getToken();
+    const r = await fetch(`/api/traffic/proxy/ca`, {
+      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({ error: `下载失败: ${r.status}` }));
+      throw new Error(e.error ?? `下载失败: ${r.status}`);
+    }
+    // 文件名跟随后端的 Content-Disposition，拿不到时用同名默认值。
+    const m = (r.headers.get("Content-Disposition") ?? "").match(/filename="?([^";]+)"?/);
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = m?.[1] ?? "artex-mitm-ca.pem";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  },
+
   // ---- app settings (runtime toggles) ----
   settings: () => get<Settings>(`/settings`),
   setSettings: (patch: Partial<Settings>) => put<Settings>(`/settings`, patch),
@@ -825,8 +874,7 @@ export const api = {
   // 渠道是多实例资源（同一类型可配多个机器人、各有过滤规则），因此独立成组，
   // 不塞进扁平的 settings 键值里。
   notifyMeta: () => get<NotificationMeta>(`/notify/meta`),
-  notifyChannels: () =>
-    get<{ channels: NotificationChannel[] }>(`/notify/channels`).then((r) => arr(r.channels)),
+  notifyChannels: () => get<{ channels: NotificationChannel[] }>(`/notify/channels`).then((r) => arr(r.channels)),
   notifyCreateChannel: (payload: {
     name: string;
     kind: string;

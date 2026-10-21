@@ -112,6 +112,43 @@ DROP TRIGGER IF EXISTS trg_av2_upd ON assets;
 CREATE TRIGGER trg_av2_upd BEFORE UPDATE ON assets
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
+-- =====================================================================
+-- 接口鉴权档案：一条接口/服务资产对应一行，回答两个问题——这个接口要不要
+-- 鉴权（needs_auth / auth_kind），以及我们手上有没有可用的凭据
+-- （has_credential / verified / credential）。
+--
+-- fields 记的是「鉴权信息藏在哪儿」：[{name, where, kind}]，where 取
+-- header / query / body / cookie，由 AI 从流量里识别后回写，人可改。
+-- credential 记「值是什么」，供复放请求用：{headers,cookies,params,account}。
+-- 凭据按本项目既有的全量留存策略明文入库（与流量库、LLM 录制库一致），
+-- 前端默认掩码显示，只有显式点开才出明文。
+--
+-- 主键就是 asset_id：一个接口只有一份鉴权档案，重复登记走 UPSERT。
+-- =====================================================================
+CREATE TABLE IF NOT EXISTS endpoint_auth (
+    asset_id        BIGINT PRIMARY KEY REFERENCES assets(id) ON DELETE CASCADE,
+    needs_auth      BOOLEAN NOT NULL DEFAULT true,
+    auth_kind       TEXT NOT NULL DEFAULT 'unknown'
+                    CHECK (auth_kind IN ('none','basic','bearer','jwt','api_key','cookie','session','signature','oauth','unknown')),
+    has_credential  BOOLEAN NOT NULL DEFAULT false,
+    verified        BOOLEAN NOT NULL DEFAULT false,
+    fields          JSONB   NOT NULL DEFAULT '[]',
+    credential      JSONB   NOT NULL DEFAULT '{}',
+    source          TEXT NOT NULL DEFAULT 'manual' CHECK (source IN ('manual','ai','traffic')),
+    confidence      REAL    NOT NULL DEFAULT 0,
+    note            TEXT,
+    updated_by      TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+-- 「需要鉴权但还没拿到凭据」是 AI 最想啃的待办清单，也是页面上的筛选项，
+-- 用部分索引把它单独拎出来，避免随资产量线性变慢。
+CREATE INDEX IF NOT EXISTS idx_epauth_missing ON endpoint_auth(asset_id) WHERE needs_auth AND NOT has_credential;
+CREATE INDEX IF NOT EXISTS idx_epauth_kind ON endpoint_auth(auth_kind);
+DROP TRIGGER IF EXISTS trg_epauth_upd ON endpoint_auth;
+CREATE TRIGGER trg_epauth_upd BEFORE UPDATE ON endpoint_auth
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
 CREATE TABLE IF NOT EXISTS company_scope (
     id         BIGSERIAL PRIMARY KEY,
     company_id BIGINT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,

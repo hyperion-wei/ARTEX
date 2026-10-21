@@ -3,7 +3,7 @@
   "info": {
     "title": "ARTEX API",
     "version": "0.3.15",
-    "description": "ARTEX —— AI 自主渗透测试系统后端 HTTP API。\n\n**鉴权**:除 `/api/auth/*`(登录/初始化/改密/状态)外,所有接口均需 JWT。三种携带方式:\n1. 请求头 `Authorization: Bearer <token>`(常规请求);\n2. Cookie `artex_token`(浏览器自动携带);\n3. 查询参数 `?token=<token>`(仅建议用于 SSE 流式接口,浏览器 EventSource 无法自定义请求头)。\n\nToken 通过 `POST /api/auth/login` 获取(HS256,有效期 7 天);首次使用需 `POST /api/auth/init` 初始化账号。\n\n**响应约定**:成功响应直接返回业务数据(无统一信封,列表接口多为 JSON 数组);\n错误响应统一为 `{\"error\": \"<message>\"}`,HTTP 状态码见各接口定义(400 参数错误 / 401 未认证 / 404 不存在 / 409 状态冲突 / 500 服务端错误)。\n\n**SSE 流式接口**:路径带 `/stream`、`/events` 的接口返回 `text/event-stream`,事件通过 `data:` 行携带 JSON。\n\n**路径参数约定**:`{id}` 型任务 ID 除数字 ID 外普遍支持 `active`(当前活跃任务),详见各接口说明。\n\n共 276 个操作,201 个路径。默认服务地址 http://localhost:8787。"
+    "description": "ARTEX —— AI 自主渗透测试系统后端 HTTP API。\n\n**鉴权**:除 `/api/auth/*`(登录/初始化/改密/状态)外,所有接口均需 JWT。三种携带方式:\n1. 请求头 `Authorization: Bearer <token>`(常规请求);\n2. Cookie `artex_token`(浏览器自动携带);\n3. 查询参数 `?token=<token>`(仅建议用于 SSE 流式接口,浏览器 EventSource 无法自定义请求头)。\n\nToken 通过 `POST /api/auth/login` 获取(HS256,有效期 7 天);首次使用需 `POST /api/auth/init` 初始化账号。\n\n**响应约定**:成功响应直接返回业务数据(无统一信封,列表接口多为 JSON 数组);\n错误响应统一为 `{\"error\": \"<message>\"}`,HTTP 状态码见各接口定义(400 参数错误 / 401 未认证 / 404 不存在 / 409 状态冲突 / 500 服务端错误)。\n\n**SSE 流式接口**:路径带 `/stream`、`/events` 的接口返回 `text/event-stream`,事件通过 `data:` 行携带 JSON。\n\n**路径参数约定**:`{id}` 型任务 ID 除数字 ID 外普遍支持 `active`(当前活跃任务),详见各接口说明。\n\n共 282 个操作,204 个路径。默认服务地址 http://localhost:8787。"
   },
   "servers": [
     {
@@ -4586,6 +4586,308 @@
           }
         }
       },
+      "EndpointAuthKind": {
+        "type": "string",
+        "enum": [
+          "none",
+          "basic",
+          "bearer",
+          "jwt",
+          "api_key",
+          "cookie",
+          "session",
+          "signature",
+          "oauth",
+          "unknown"
+        ],
+        "description": "鉴权类型;空值按 unknown 处理"
+      },
+      "EndpointAuthSource": {
+        "type": "string",
+        "enum": [
+          "manual",
+          "ai",
+          "traffic"
+        ],
+        "description": "档案来源:人工登记 / AI 工具回写 / 流量提取"
+      },
+      "EndpointAuthField": {
+        "type": "object",
+        "description": "一个被识别出来的鉴权字段(鉴权信息藏在哪儿)",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "字段名,如 Authorization / token / PHPSESSID"
+          },
+          "where": {
+            "type": "string",
+            "enum": [
+              "header",
+              "query",
+              "body",
+              "cookie"
+            ],
+            "description": "出现位置;入库前会被转成小写并去空格"
+          },
+          "kind": {
+            "type": "string",
+            "description": "该字段的鉴权类型(可选)"
+          }
+        },
+        "required": [
+          "name",
+          "where"
+        ]
+      },
+      "EndpointAuthAccount": {
+        "type": "object",
+        "description": "账号口令型凭据(basic / 表单登录)",
+        "properties": {
+          "username": {
+            "type": "string",
+            "description": "账号"
+          },
+          "password": {
+            "type": "string",
+            "description": "口令,明文存放"
+          }
+        }
+      },
+      "EndpointAuthCredential": {
+        "type": "object",
+        "description": "可直接用于复放请求的凭据集合。明文入库,前端默认收起、需显式展开才渲染明文",
+        "properties": {
+          "headers": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "请求头键值,如 {\"Authorization\":\"Bearer xxx\"}"
+          },
+          "cookies": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Cookie 键值"
+          },
+          "params": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "URL/表单参数键值"
+          },
+          "account": {
+            "$ref": "#/components/schemas/EndpointAuthAccount"
+          },
+          "raw": {
+            "type": "string",
+            "description": "整段凭据原文(不便拆成键值时用,如完整 Cookie 串)"
+          }
+        }
+      },
+      "EndpointAuth": {
+        "type": "object",
+        "description": "接口鉴权档案一行:这个接口要不要鉴权、鉴权字段藏在哪、我们手上有没有可用凭据",
+        "properties": {
+          "asset_id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "所属资产 ID(主键,外键指向 assets)"
+          },
+          "needs_auth": {
+            "type": "boolean",
+            "description": "是否需要鉴权;false 表示已确认公开可访问"
+          },
+          "auth_kind": {
+            "$ref": "#/components/schemas/EndpointAuthKind"
+          },
+          "has_credential": {
+            "type": "boolean",
+            "description": "是否已拿到鉴权信息;服务端按 credential 内容推导"
+          },
+          "verified": {
+            "type": "boolean",
+            "description": "凭据是否被实际请求验证过可用;needs_auth=false 时恒为 false"
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EndpointAuthField"
+            },
+            "description": "识别出的鉴权字段;无数据时为空数组"
+          },
+          "credential": {
+            "$ref": "#/components/schemas/EndpointAuthCredential"
+          },
+          "source": {
+            "$ref": "#/components/schemas/EndpointAuthSource"
+          },
+          "confidence": {
+            "type": "number",
+            "format": "float",
+            "description": "0-1 置信度(AI 判断用;float4 存储,回显可能有精度尾差)"
+          },
+          "note": {
+            "type": "string",
+            "description": "备注(判断依据、凭据来源、有效期限制等)"
+          },
+          "updated_by": {
+            "type": "string",
+            "description": "最后修改者署名"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "创建时间"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "更新时间(由触发器维护)"
+          },
+          "url": {
+            "type": "string",
+            "description": "只读:查询时 LEFT JOIN assets 带出的接口地址"
+          },
+          "method": {
+            "type": "string",
+            "description": "只读:查询时带出的请求方法"
+          }
+        },
+        "required": [
+          "asset_id",
+          "needs_auth",
+          "auth_kind",
+          "has_credential",
+          "verified",
+          "fields",
+          "credential",
+          "source",
+          "confidence"
+        ]
+      },
+      "EndpointAuthInput": {
+        "type": "object",
+        "description": "POST /api/endpoint-auth 请求体。时间戳由服务端生成,url/method 是查询侧 JOIN 出来的只读列,均不需要提供",
+        "properties": {
+          "asset_id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "目标资产 ID,必须已存在于 assets 表"
+          },
+          "needs_auth": {
+            "type": "boolean",
+            "description": "是否需要鉴权"
+          },
+          "auth_kind": {
+            "$ref": "#/components/schemas/EndpointAuthKind"
+          },
+          "has_credential": {
+            "type": "boolean",
+            "description": "可省略;credential 非空时服务端自动置 true"
+          },
+          "verified": {
+            "type": "boolean",
+            "description": "凭据是否已实测可用"
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EndpointAuthField"
+            }
+          },
+          "credential": {
+            "$ref": "#/components/schemas/EndpointAuthCredential"
+          },
+          "source": {
+            "$ref": "#/components/schemas/EndpointAuthSource"
+          },
+          "confidence": {
+            "type": "number",
+            "format": "float",
+            "description": "0-1"
+          },
+          "note": {
+            "type": "string",
+            "description": "备注;空串按未设置处理"
+          },
+          "updated_by": {
+            "type": "string",
+            "description": "留空时按 source 给默认署名(ai 或 manual)"
+          }
+        },
+        "required": [
+          "asset_id",
+          "needs_auth"
+        ]
+      },
+      "EndpointAuthSingleResponse": {
+        "type": "object",
+        "description": "asset_id 单查响应",
+        "properties": {
+          "auth": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/EndpointAuth"
+              }
+            ],
+            "nullable": true,
+            "description": "该资产的档案;从未登记过则为 null",
+            "type": "object"
+          }
+        },
+        "required": [
+          "auth"
+        ]
+      },
+      "EndpointAuthListResponse": {
+        "type": "object",
+        "description": "ids 批量查询响应;没有档案的 ID 不会出现在 items 里",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EndpointAuth"
+            }
+          }
+        },
+        "required": [
+          "items"
+        ]
+      },
+      "EndpointAuthMissingResponse": {
+        "type": "object",
+        "description": "missing=1 待办清单响应:需要鉴权但还没拿到凭据的接口",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EndpointAuth"
+            }
+          },
+          "count": {
+            "type": "integer",
+            "description": "本次返回条数(受 limit 约束,不是全库总数)"
+          }
+        },
+        "required": [
+          "items",
+          "count"
+        ]
+      },
+      "EndpointAuthDeleteResponse": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ]
+      },
       "TaskNode": {
         "type": "object",
         "description": "探索节点(frontier/意图列表/图/播报板共用的节点 DTO)。id 为节点 id 的字符串形式。",
@@ -6601,6 +6903,119 @@
             "description": "索引压实后归还给文件系统的字节数"
           }
         }
+      },
+      "ProxyGuardView": {
+        "type": "object",
+        "description": "被动代理当前状态 + Agent 侧内部代理地址(只读)",
+        "properties": {
+          "available": {
+            "type": "boolean",
+            "description": "本实例是否跑了流量代理(启动时 -proxy 为空则 false)"
+          },
+          "agent_addr": {
+            "type": "string",
+            "description": "Agent 内部代理的监听地址,如 127.0.0.1:8788;只读,不受本页设置影响"
+          },
+          "agent_proxy_url": {
+            "type": "string",
+            "description": "注入给 Agent(bash / WebFetch)的代理地址;永不含凭据"
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "被动代理当前是否在监听"
+          },
+          "listen": {
+            "type": "string",
+            "description": "被动代理监听地址 host:port;空字符串表示未启用"
+          },
+          "user": {
+            "type": "string",
+            "description": "代理认证用户名;空表示未启用认证"
+          },
+          "pass": {
+            "type": "string",
+            "description": "代理认证口令,明文回显(它本就存在本机 settings 里,且需要能确认填对了)"
+          },
+          "allowlist": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "归一化后的域名白名单条目;空数组=全部记录"
+          },
+          "auth_enabled": {
+            "type": "boolean",
+            "description": "被动代理是否要求认证"
+          },
+          "proxy_url": {
+            "type": "string",
+            "description": "给人直接粘用的代理地址,开认证时形如 http://user:pass@host:port;未启用时为空"
+          },
+          "ca_cert_path": {
+            "type": "string",
+            "description": "CA 根证书在本机的路径(下载走 GET /api/traffic/proxy/ca)"
+          },
+          "capture_on": {
+            "type": "boolean",
+            "description": "流量捕获开关:决定要不要把代理与 traffic_* 工具注入 Agent,与被动代理是否启用无关"
+          }
+        },
+        "required": [
+          "available",
+          "enabled",
+          "auth_enabled",
+          "capture_on",
+          "allowlist"
+        ]
+      },
+      "ProxyGuardUpdateRequest": {
+        "type": "object",
+        "description": "被动代理配置写入体",
+        "properties": {
+          "listen": {
+            "type": "string",
+            "description": "监听地址 host:port;传空字符串=关闭被动代理"
+          },
+          "user": {
+            "type": "string",
+            "description": "代理用户名;与 pass 同空或同非空"
+          },
+          "pass": {
+            "type": "string",
+            "description": "代理口令,非空时至少 6 位"
+          },
+          "allowlist": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "白名单数组写法,与 allow_text 二选一(两者都给时以 allow_text 为准)"
+          },
+          "allow_text": {
+            "type": "string",
+            "description": "白名单原文,一行一条,也接受逗号/分号分隔;# 开头为注释"
+          }
+        }
+      },
+      "ProxyGuardUpdateResponse": {
+        "type": "object",
+        "description": "保存结果与最新状态",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "proxy": {
+            "$ref": "#/components/schemas/ProxyGuardView"
+          },
+          "note": {
+            "type": "string",
+            "description": "生效说明:被动代理与 Agent 链路互不影响,故无需重建 Agent"
+          }
+        },
+        "required": [
+          "ok",
+          "proxy"
+        ]
       },
       "LLMConfig": {
         "type": "object",
@@ -18026,6 +18441,219 @@
         ]
       }
     },
+    "/api/endpoint-auth": {
+      "get": {
+        "tags": [
+          "assets"
+        ],
+        "summary": "查询接口鉴权档案",
+        "description": "读取 endpoint_auth 表的接口鉴权档案,三种互斥模式按此优先级判定:missing=1 优先,其次 ids,最后 asset_id。missing=1 返回「需要鉴权但还没拿到凭据」的待办清单(按更新时间倒序,limit 默认 50、上限 500);ids 为逗号分隔的资产 ID 列表,一次批量取回(供资产列表一页一次);asset_id 查单条,该资产从未登记过档案时 auth 返回 null 而非 404,因为「未登记」是常态。三种模式响应结构不同,见 200 的 oneOf。",
+        "operationId": "getEndpointAuth",
+        "parameters": [
+          {
+            "name": "asset_id",
+            "in": "query",
+            "required": false,
+            "description": "单条查询的资产 ID(>0 生效);三者皆空返回 400",
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "ids",
+            "in": "query",
+            "required": false,
+            "description": "逗号分隔的资产 ID 列表(如 1,2,3),非正整数返回 400",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "missing",
+            "in": "query",
+            "required": false,
+            "description": "值为 1 时只列「需鉴权但缺凭据」的接口",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1"
+              ]
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "missing 模式最多返回条数,<=0 或 >500 按 50 处理",
+            "schema": {
+              "type": "integer",
+              "default": 50,
+              "maximum": 500
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "按查询模式返回三种结构之一",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/EndpointAuthSingleResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/EndpointAuthListResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/EndpointAuthMissingResponse"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "参数缺失或 ids 含非正整数",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "数据库不可用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "assets"
+        ],
+        "summary": "新增或覆盖接口鉴权档案",
+        "description": "按 asset_id 新增或整体覆盖一份鉴权档案(主键即 asset_id,一个接口只有一份)。has_credential 由服务端推导:显式传 true 或 credential 非空即为 true,避免填了凭据却漏置位导致档案自相矛盾;needs_auth=false 时 verified 会被强制收敛为 false。auth_kind 与 source 做白名单校验,非法值返回 400 而不是撞数据库 CHECK 约束。credential 明文入库(与流量库、LLM 录制库同一留存口径),前端默认掩码显示。成功返回回读后的最终档案,便于拿到服务端推导出的字段。",
+        "operationId": "saveEndpointAuth",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EndpointAuthInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "保存后的最终档案",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EndpointAuth"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "asset_id 缺失/非正、auth_kind 或 source 非法、目标资产不存在",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "数据库不可用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "assets"
+        ],
+        "summary": "删除接口鉴权档案",
+        "description": "删除某资产的鉴权档案,供页面「清空重填」使用。资产本身被删除时由外键 ON DELETE CASCADE 自动带走,无需先删档案。幂等:档案不存在也返回成功。",
+        "operationId": "deleteEndpointAuth",
+        "parameters": [
+          {
+            "name": "asset_id",
+            "in": "query",
+            "required": true,
+            "description": "目标资产 ID(>0)",
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "删除成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EndpointAuthDeleteResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "asset_id 缺失或非正整数",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "数据库不可用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
     "/api/exploration/frontier": {
       "get": {
         "tags": [
@@ -21613,6 +22241,144 @@
           },
           "500": {
             "description": "删除或压实失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/traffic/proxy": {
+      "get": {
+        "tags": [
+          "traffic"
+        ],
+        "summary": "读取被动代理入口策略",
+        "description": "返回被动代理(供用户自己的浏览器/工具使用的独立监听实例)的当前生效状态,以及 Agent 侧内部代理的地址。要点:Agent 走的是启动参数 -proxy 给的内部实例,它的 guard 恒为空——不认证、不看白名单、全量记录,因此本组接口的任何配置都不会影响 Agent 原有的流量捕获链路,也不需要重建 Agent。两个实例共用同一份流量索引与文件树,traffic_search 查到的仍是全部流量。",
+        "operationId": "getTrafficProxyConfig",
+        "responses": {
+          "200": {
+            "description": "当前入口策略",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProxyGuardView"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "traffic"
+        ],
+        "summary": "设置被动代理入口策略(监听地址/代理密码/域名白名单)",
+        "description": "校验并立即应用新策略,成功后才持久化到 settings,重启后自动装回。顺序有意为之:认证与白名单只改内存快照、不重启监听即可生效,先落库;起/挪地址可能失败(端口被占、撞上已有 HTTP 服务、与 Agent 内部代理同地址),失败时返回 400,此时其余三项已生效也已保存。listen 传空字符串即关闭被动代理并清空持久化地址。白名单语义:留空=经过的都记录;非空则只记录名单内域名,名单外照常转发但不解密、不落库;条目 example.com 含其所有子域,也支持 *.example.com 与 # 注释行,URL/端口写法会被归一化剥掉。密码走 HTTP 标准 Proxy-Authorization(Basic),需与用户名成对给出且口令不少于 6 位;比对使用定长比较。",
+        "operationId": "setTrafficProxyConfig",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProxyGuardUpdateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "已生效,并回带最新状态",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProxyGuardUpdateResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "地址格式非法、端口无法监听或已有 HTTP 服务应答、与 Agent 内部代理同地址、认证参数不成对、口令过短、数据库写入失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "本实例未以 -proxy 启动,被动代理不可用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/traffic/proxy/ca": {
+      "get": {
+        "tags": [
+          "traffic"
+        ],
+        "summary": "下载记录代理的 CA 根证书",
+        "description": "以附件形式返回 MITM 代理的根证书 PEM(下载名 artex-mitm-ca.pem),供浏览器、命令行工具或移动设备导入信任;不信任该证书时经代理的 HTTPS 请求会报证书错误。路径由数据目录拼接得出、不接受任何请求参数。证书在代理启动时写出,文件不存在返回 404。注意:浏览器直连下载拿不到自定义请求头,前端需带 JWT fetch 成 blob 再触发下载。",
+        "operationId": "downloadTrafficProxyCA",
+        "responses": {
+          "200": {
+            "description": "PEM 格式根证书",
+            "headers": {
+              "Content-Disposition": {
+                "description": "固定 attachment; filename=\"artex-mitm-ca.pem\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/x-x509-ca-cert": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "CA 证书尚未生成(代理未成功启动过)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "本实例未以 -proxy 启动,无 CA 证书",
             "content": {
               "application/json": {
                 "schema": {

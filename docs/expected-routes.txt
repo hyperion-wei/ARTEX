@@ -4,6 +4,7 @@ DELETE /api/assets
 DELETE /api/companies/{id}
 DELETE /api/conversations/{id}
 DELETE /api/conversations/{id}/side-questions
+DELETE /api/endpoint-auth
 DELETE /api/exploration/findings/{id}
 DELETE /api/intercept/rules/{id}
 DELETE /api/llm/profiles/{id}
@@ -49,6 +50,7 @@ GET /api/conversations
 GET /api/conversations/{id}/messages
 GET /api/conversations/{id}/messages/{seq}
 GET /api/conversations/{id}/side-questions
+GET /api/endpoint-auth
 GET /api/exploration/activity
 GET /api/exploration/activity/history
 GET /api/exploration/activity/stream
@@ -133,6 +135,8 @@ GET /api/traffic
 GET /api/traffic/blob
 GET /api/traffic/exchange
 GET /api/traffic/hosts
+GET /api/traffic/proxy
+GET /api/traffic/proxy/ca
 GET /api/update/check
 GET /api/update/stream
 GET /api/visibility/skill/{name}
@@ -175,6 +179,7 @@ POST /api/conversations/delete/batch
 POST /api/conversations/{id}/messages
 POST /api/conversations/{id}/side-questions
 POST /api/conversations/{id}/stop
+POST /api/endpoint-auth
 POST /api/exploration/findings/{id}/deepen
 POST /api/exploration/findings/{id}/retests
 POST /api/exploration/main-session/new
@@ -229,6 +234,7 @@ POST /api/tasks/{id}/scope
 POST /api/tools/custom
 POST /api/tools/custom/test
 POST /api/tools/{key}/reset
+POST /api/traffic/proxy
 POST /api/update/apply
 POST /api/update/rollback
 POST /api/visibility/skill/toggle

@@ -744,6 +744,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/assets", s.insertAssets)
 	mux.HandleFunc("DELETE /api/assets", s.deleteAssets)
 
+	// 接口鉴权档案（endpoint_auth）：这个接口要不要鉴权、我们有没有凭据
+	mux.HandleFunc("GET /api/endpoint-auth", s.getEndpointAuth)
+	mux.HandleFunc("POST /api/endpoint-auth", s.saveEndpointAuth)
+	mux.HandleFunc("DELETE /api/endpoint-auth", s.deleteEndpointAuth)
+
 	// company system
 	mux.HandleFunc("GET /api/companies", s.listCompanies)
 	mux.HandleFunc("POST /api/companies", s.createCompany)
@@ -784,6 +789,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/audit", s.getAudit)
 	mux.HandleFunc("POST /api/gc", s.gc)
 	mux.HandleFunc("GET /api/traffic", s.getTraffic)
+	// 被动代理入口策略（监听地址/代理认证/域名白名单）
+	mux.HandleFunc("GET /api/traffic/proxy", s.getTrafficProxyConfig)
+	mux.HandleFunc("POST /api/traffic/proxy", s.setTrafficProxyConfig)
+	// 下载记录代理的根证书（客户端信任它才能抓 HTTPS）
+	mux.HandleFunc("GET /api/traffic/proxy/ca", s.downloadTrafficProxyCA)
 	mux.HandleFunc("GET /api/traffic/hosts", s.getTrafficHosts)
 	mux.HandleFunc("DELETE /api/traffic", s.deleteTraffic)
 	mux.HandleFunc("DELETE /api/traffic/hosts", s.deleteTrafficHosts)

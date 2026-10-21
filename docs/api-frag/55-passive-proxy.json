@@ -1,0 +1,124 @@
+{
+  "paths": {
+    "/api/traffic/proxy": {
+      "get": {
+        "tags": ["traffic"],
+        "summary": "读取被动代理入口策略",
+        "description": "返回被动代理(供用户自己的浏览器/工具使用的独立监听实例)的当前生效状态,以及 Agent 侧内部代理的地址。要点:Agent 走的是启动参数 -proxy 给的内部实例,它的 guard 恒为空——不认证、不看白名单、全量记录,因此本组接口的任何配置都不会影响 Agent 原有的流量捕获链路,也不需要重建 Agent。两个实例共用同一份流量索引与文件树,traffic_search 查到的仍是全部流量。",
+        "operationId": "getTrafficProxyConfig",
+        "responses": {
+          "200": {
+            "description": "当前入口策略",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ProxyGuardView" } }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": ["traffic"],
+        "summary": "设置被动代理入口策略(监听地址/代理密码/域名白名单)",
+        "description": "校验并立即应用新策略,成功后才持久化到 settings,重启后自动装回。顺序有意为之:认证与白名单只改内存快照、不重启监听即可生效,先落库;起/挪地址可能失败(端口被占、撞上已有 HTTP 服务、与 Agent 内部代理同地址),失败时返回 400,此时其余三项已生效也已保存。listen 传空字符串即关闭被动代理并清空持久化地址。白名单语义:留空=经过的都记录;非空则只记录名单内域名,名单外照常转发但不解密、不落库;条目 example.com 含其所有子域,也支持 *.example.com 与 # 注释行,URL/端口写法会被归一化剥掉。密码走 HTTP 标准 Proxy-Authorization(Basic),需与用户名成对给出且口令不少于 6 位;比对使用定长比较。",
+        "operationId": "setTrafficProxyConfig",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/ProxyGuardUpdateRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "已生效,并回带最新状态",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ProxyGuardUpdateResponse" } }
+            }
+          },
+          "400": {
+            "description": "地址格式非法、端口无法监听或已有 HTTP 服务应答、与 Agent 内部代理同地址、认证参数不成对、口令过短、数据库写入失败",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "503": {
+            "description": "本实例未以 -proxy 启动,被动代理不可用",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    },
+    "/api/traffic/proxy/ca": {
+      "get": {
+        "tags": ["traffic"],
+        "summary": "下载记录代理的 CA 根证书",
+        "description": "以附件形式返回 MITM 代理的根证书 PEM(下载名 artex-mitm-ca.pem),供浏览器、命令行工具或移动设备导入信任;不信任该证书时经代理的 HTTPS 请求会报证书错误。路径由数据目录拼接得出、不接受任何请求参数。证书在代理启动时写出,文件不存在返回 404。注意:浏览器直连下载拿不到自定义请求头,前端需带 JWT fetch 成 blob 再触发下载。",
+        "operationId": "downloadTrafficProxyCA",
+        "responses": {
+          "200": {
+            "description": "PEM 格式根证书",
+            "headers": {
+              "Content-Disposition": {
+                "description": "固定 attachment; filename=\"artex-mitm-ca.pem\"",
+                "schema": { "type": "string" }
+              }
+            },
+            "content": {
+              "application/x-x509-ca-cert": {
+                "schema": { "type": "string", "format": "binary" }
+              }
+            }
+          },
+          "404": {
+            "description": "CA 证书尚未生成(代理未成功启动过)",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          },
+          "503": {
+            "description": "本实例未以 -proxy 启动,无 CA 证书",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+          }
+        }
+      }
+    }
+  },
+  "schemas": {
+    "ProxyGuardView": {
+      "type": "object",
+      "description": "被动代理当前状态 + Agent 侧内部代理地址(只读)",
+      "properties": {
+        "available": { "type": "boolean", "description": "本实例是否跑了流量代理(启动时 -proxy 为空则 false)" },
+        "agent_addr": { "type": "string", "description": "Agent 内部代理的监听地址,如 127.0.0.1:8788;只读,不受本页设置影响" },
+        "agent_proxy_url": { "type": "string", "description": "注入给 Agent(bash / WebFetch)的代理地址;永不含凭据" },
+        "enabled": { "type": "boolean", "description": "被动代理当前是否在监听" },
+        "listen": { "type": "string", "description": "被动代理监听地址 host:port;空字符串表示未启用" },
+        "user": { "type": "string", "description": "代理认证用户名;空表示未启用认证" },
+        "pass": { "type": "string", "description": "代理认证口令,明文回显(它本就存在本机 settings 里,且需要能确认填对了)" },
+        "allowlist": { "type": "array", "items": { "type": "string" }, "description": "归一化后的域名白名单条目;空数组=全部记录" },
+        "auth_enabled": { "type": "boolean", "description": "被动代理是否要求认证" },
+        "proxy_url": { "type": "string", "description": "给人直接粘用的代理地址,开认证时形如 http://user:pass@host:port;未启用时为空" },
+        "ca_cert_path": { "type": "string", "description": "CA 根证书在本机的路径(下载走 GET /api/traffic/proxy/ca)" },
+        "capture_on": { "type": "boolean", "description": "流量捕获开关:决定要不要把代理与 traffic_* 工具注入 Agent,与被动代理是否启用无关" }
+      },
+      "required": ["available", "enabled", "auth_enabled", "capture_on", "allowlist"]
+    },
+    "ProxyGuardUpdateRequest": {
+      "type": "object",
+      "description": "被动代理配置写入体",
+      "properties": {
+        "listen": { "type": "string", "description": "监听地址 host:port;传空字符串=关闭被动代理" },
+        "user": { "type": "string", "description": "代理用户名;与 pass 同空或同非空" },
+        "pass": { "type": "string", "description": "代理口令,非空时至少 6 位" },
+        "allowlist": { "type": "array", "items": { "type": "string" }, "description": "白名单数组写法,与 allow_text 二选一(两者都给时以 allow_text 为准)" },
+        "allow_text": { "type": "string", "description": "白名单原文,一行一条,也接受逗号/分号分隔;# 开头为注释" }
+      }
+    },
+    "ProxyGuardUpdateResponse": {
+      "type": "object",
+      "description": "保存结果与最新状态",
+      "properties": {
+        "ok": { "type": "boolean" },
+        "proxy": { "$ref": "#/components/schemas/ProxyGuardView" },
+        "note": { "type": "string", "description": "生效说明:被动代理与 Agent 链路互不影响,故无需重建 Agent" }
+      },
+      "required": ["ok", "proxy"]
+    }
+  }
+}

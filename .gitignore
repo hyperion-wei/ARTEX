@@ -54,6 +54,9 @@ Thumbs.db
 # JWT 签名密钥（运行时生成，存项目根，绝不提交）
 /jwt.key
 
+# 本地开发用便携 PostgreSQL（.pgdev/，不入库）
+/.pgdev/
+
 # Docker 部署生成的本地环境（含密码/密钥，不提交）
 .env
 

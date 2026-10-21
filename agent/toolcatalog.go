@@ -42,10 +42,13 @@ func builtinToolsByAgent() map[string][]actool.CoreTool {
 		"goals": {ts.setGoals(), ts.setConstraints()},
 		// auto 默认绑漏洞上报 + 资产管理工具，其他域工具可在 UI 按需勾选。
 		// 新库由此 seed 写入；老库由 seedAutoDefaultBindings 迁移。
-		"auto": {ts.addFinding(), ts.insertAssets(), ts.addCompanyScope(), ts.listAssets(), ts.listCompanies()},
+		// list_endpoint_auth 给 auto：人会在对话里问「哪些接口还缺登录态」，它得能查到；
+		// record 不给——auto 不实际打目标，写进去的只能是猜测。
+		"auto": {ts.addFinding(), ts.insertAssets(), ts.addCompanyScope(), ts.listAssets(), ts.listCompanies(), ts.listEndpointAuth()},
 		// pentest（独立渗透 agent）默认绑：查资产 / 插资产 / 报漏洞 / 查漏洞 / 查企业。
 		// 新库由此 seed 写入；老库由 seedPentestDefaultBindings 迁移。
-		"pentest": {ts.listAssets(), ts.insertAssets(), ts.addFinding(), ts.listFindings(), ts.listCompanies()},
+		// 鉴权档案两个都给：它一人从侦察走到利用，登录态是自己拿到的，也只有它当场能看到。
+		"pentest": {ts.listAssets(), ts.insertAssets(), ts.addFinding(), ts.listFindings(), ts.listCompanies(), ts.recordEndpointAuth(), ts.listEndpointAuth()},
 	}
 }
 

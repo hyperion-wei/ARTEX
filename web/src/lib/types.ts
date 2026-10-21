@@ -257,6 +257,109 @@ export interface Asset {
   task_source_node_id?: number;
 }
 
+// POST /api/assets 手工登记资产(仅覆盖新增资产抽屉用到的字段)
+export interface AssetInsert {
+  type: NewAssetType;
+  domain?: string;
+  icp?: string;
+  ip?: string;
+  app_name?: string;
+  bundle_id?: string;
+  category?: string;
+  description?: string;
+  app_icp?: string;
+  url?: string;
+  service_ip?: string;
+  // service(service_type=other) 用：非 HTTP 端口服务
+  port?: number;
+  service_name?: string;
+  // endpoint 用：后端要求 method 非空，缺了会回 "method is required"
+  method?: string;
+}
+
+export interface AssetInsertResult {
+  results: { index: number; id: number; type: string }[];
+  errors: { index: number; error: string }[];
+}
+
+// ---- 接口鉴权档案（表 endpoint_auth / API /api/endpoint-auth）----
+
+export type EndpointAuthKind =
+  | "none"
+  | "basic"
+  | "bearer"
+  | "jwt"
+  | "api_key"
+  | "cookie"
+  | "session"
+  | "signature"
+  | "oauth"
+  | "unknown";
+
+/** 一个被识别出来的鉴权字段。 */
+export interface EndpointAuthField {
+  name: string;
+  /** 出现位置：请求头 / URL 参数 / 正文 / Cookie */
+  where: "header" | "query" | "body" | "cookie" | string;
+  kind?: string;
+}
+
+/** 可直接用于复放请求的凭据集合，明文存放、页面默认掩码。 */
+export interface EndpointAuthCredential {
+  headers?: Record<string, string>;
+  cookies?: Record<string, string>;
+  params?: Record<string, string>;
+  account?: { username?: string; password?: string };
+  raw?: string;
+}
+
+export interface EndpointAuth {
+  asset_id: number;
+  needs_auth: boolean;
+  auth_kind: EndpointAuthKind;
+  has_credential: boolean;
+  verified: boolean;
+  fields: EndpointAuthField[];
+  credential: EndpointAuthCredential;
+  source: "manual" | "ai" | "traffic" | string;
+  confidence: number;
+  note?: string;
+  updated_by?: string;
+  created_at: string;
+  updated_at: string;
+  /** 只读：服务端 JOIN 资产表带出的接口地址与方法。 */
+  url?: string;
+  method?: string;
+}
+
+/**
+ * POST /api/endpoint-auth 的请求体：时间戳由服务端生成，url/method 是查询时
+ * JOIN 出来的只读列，所以都不要求调用方给。
+ */
+export type EndpointAuthInput = Omit<EndpointAuth, "created_at" | "updated_at" | "url" | "method">;
+
+// ---- 被动代理入口策略（API /api/traffic/proxy）----
+
+export interface ProxyGuard {
+  /** 本实例是否跑了代理（启动时 -proxy 为空则两者都没有）。 */
+  available: boolean;
+  /** Agent 用的内部代理地址：只读，不受本页设置影响。 */
+  agent_addr: string;
+  /** Agent 实际拿到的代理地址（注入给 bash / WebFetch 的那个）。 */
+  agent_proxy_url: string;
+  /** 被动代理当前是否在监听。 */
+  enabled: boolean;
+  listen: string;
+  user: string;
+  pass: string;
+  allowlist: string[];
+  auth_enabled: boolean;
+  /** 给人自己粘的代理地址（开了认证时含 user:pass）；未启用时为空。 */
+  proxy_url: string;
+  ca_cert_path: string;
+  capture_on: boolean;
+}
+
 export interface IntentAsset {
   intent_id: number | string;
   asset_id: number;

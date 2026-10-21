@@ -8,7 +8,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"crypto/subtle"
 	"database/sql"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -170,6 +172,17 @@ type Traffic struct {
 	// transparent-passthrough paths honor it (go-mitmproxy's getUpstreamConn),
 	// so no host escapes it. Hot-swappable at runtime via SetUpstreamProxy.
 	upstream atomic.Pointer[url.URL]
+	// guard 是【内部实例（Agent 专用）】的入口策略。它永远保持空白名单、不开认证：
+	// Agent 的流量必须全量记录，不能被人用侧的白名单/密码挡掉（用户明确要求的语义）。
+	// 可配置的那一份在 passiveGuard，属于另一个监听实例。
+	guard atomic.Pointer[proxyGuard]
+	// passive 是给人用的第二个代理实例（独立端口/密码/白名单），nil = 未启用。
+	// 两个实例共用同一个 sink → 同一份文件树与索引库，所以 AI 查流量时不区分来源。
+	passive      *mproxy.Proxy
+	passiveGuard atomic.Pointer[proxyGuard]
+	// addrMu 保护 proxy / passive 实例本身的替换——改监听地址要重建 go-mitmproxy
+	// 的 listener，与正在读的 Start/ProxyAddr 并发。
+	addrMu sync.RWMutex
 }
 
 // Open initializes the traffic tree, blob store and SQLite index under dir.
@@ -200,14 +213,27 @@ func Open(dir, addr string) (*Traffic, error) {
 		db.Close()
 		return nil, err
 	}
+	// 内部实例（Agent 用）的策略固定为空：不认证、不看白名单，全部拦截并记录。
+	t.guard.Store(&proxyGuard{addr: addr})
+	p, err := t.buildProxy(addr, &t.guard)
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
+	t.proxy = p
+	return t, nil
+}
 
+// buildProxy 按指定 guard 造一个 go-mitmproxy 实例：上游代理、拦截规则（白名单 +
+// 失败直通）、入口认证三项都在这里挂上。两个实例（Agent 侧、被动侧）共用本函数，
+// 区别只在传进去的那份 guard：Agent 侧永远是空的。
+func (t *Traffic) buildProxy(addr string, guard *atomic.Pointer[proxyGuard]) (*mproxy.Proxy, error) {
 	p, err := mproxy.NewProxy(&mproxy.Options{
 		Addr:        addr,
 		SslInsecure: true,
-		CaRootPath:  filepath.Join(dir, "_ca"),
+		CaRootPath:  filepath.Join(t.dir, "_ca"),
 	})
 	if err != nil {
-		db.Close()
 		return nil, err
 	}
 	// Upstream selection. By default (no global egress proxy set) targets are
@@ -222,13 +248,67 @@ func Open(dir, addr string) (*Traffic, error) {
 	// Fail-open: MITM every host by default, EXCEPT ones a prior request proved we
 	// can't intercept without breaking (see maybePassthrough). Those are tunneled
 	// transparently so the request still reaches the target instead of being killed.
+	// 白名单非空时，名单外的域名走同一条直通通道：请求照样到达目标，但不解密、
+	// 不落库——用户把自己的浏览器指过来时，这决定了只有目标系统的流量被收进来。
 	p.SetShouldInterceptRule(func(req *http.Request) bool {
-		_, tunnel := t.pass.Load(hostOnly(req.Host))
+		host := hostOnly(req.Host)
+		if !guardAllows(guard.Load(), host) {
+			return false
+		}
+		_, tunnel := t.pass.Load(host)
 		return !tunnel
 	})
-	p.AddAddon(&sink{t: t})
-	t.proxy = p
-	return t, nil
+	// 入口认证：配了用户名或密码才生效。浏览器会弹代理登录框，命令行工具用
+	// http://user:pass@host:port 形式的代理地址。Agent 侧的 guard 永远为空，这里
+	// 直接放行，所以设了密码也不会把 Agent 挡在 407 外。
+	p.SetAuthProxy(func(res http.ResponseWriter, req *http.Request) (bool, error) {
+		g := guard.Load()
+		if g == nil || !g.authEnabled() {
+			return true, nil
+		}
+		user, pass, ok := proxyBasicAuth(req)
+		if !ok {
+			return false, errors.New("缺少或无法解析 Proxy-Authorization")
+		}
+		if !constantEqual(user, g.user) || !constantEqual(pass, g.pass) {
+			return false, errors.New("代理用户名或密码不正确")
+		}
+		return true, nil
+	})
+	p.AddAddon(&sink{t: t, guard: guard})
+	return p, nil
+}
+
+// constantEqual 定长比较，避免通过响应时间逐字节猜代理口令。代理口令通常同时是
+// 一个能出网的凭据，不值得在这里留下计时侧信道。
+func constantEqual(a, b string) bool {
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}
+
+// proxyBasicAuth 解析代理入口的 Basic 凭据。
+//
+// 不能用 req.BasicAuth()：net/http 那个方法只读 Authorization 头，而代理认证的
+// 凭据按 RFC 7235 走 Proxy-Authorization，两者故意不互通（目标服务器看到的
+// Authorization 应该是上游的凭据，不是代理的）。这里自己读，并兼容少数把凭据
+// 放在 Authorization 上的客户端。
+func proxyBasicAuth(req *http.Request) (user, pass string, ok bool) {
+	auth := req.Header.Get("Proxy-Authorization")
+	if auth == "" {
+		auth = req.Header.Get("Authorization")
+	}
+	const prefix = "Basic "
+	if len(auth) <= len(prefix) || !strings.EqualFold(auth[:len(prefix)], prefix) {
+		return "", "", false
+	}
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(auth[len(prefix):]))
+	if err != nil {
+		return "", "", false
+	}
+	user, pass, found := strings.Cut(string(raw), ":")
+	if !found {
+		return "", "", false
+	}
+	return user, pass, true
 }
 
 // initIndex applies the schema on a single pinned connection. Pinning is what
@@ -302,11 +382,17 @@ func hostOnly(hostport string) string {
 
 // ProxyAddr returns the address workers should set as HTTP(S)_PROXY. A bare
 // ":port" means "bind all interfaces" (legacy default), so map it to loopback.
+//
+// 这里永远是【内部实例】的地址，不带任何凭据：被动代理的密码/白名单只作用于另一个
+// 端口，Agent 的记录链路不受影响（也是 Chromium --proxy-server 不认内嵌凭据的避开法）。
 func (t *Traffic) ProxyAddr() string {
-	if strings.HasPrefix(t.addr, ":") {
-		return "http://127.0.0.1" + t.addr
+	t.addrMu.RLock()
+	addr := t.addr
+	t.addrMu.RUnlock()
+	if strings.HasPrefix(addr, ":") {
+		return "http://127.0.0.1" + addr
 	}
-	return "http://" + t.addr
+	return "http://" + addr
 }
 
 // SetUpstreamProxy points every captured request at a global egress proxy
@@ -356,7 +442,12 @@ func (t *Traffic) CACertPath() string {
 }
 
 // Start runs the proxy (blocking); run in a goroutine.
-func (t *Traffic) Start() error { return t.proxy.Start() }
+func (t *Traffic) Start() error {
+	t.addrMu.RLock()
+	p := t.proxy
+	t.addrMu.RUnlock()
+	return p.Start()
+}
 
 // Close waits for background tree reclamation to finish before closing the
 // index, so shutdown never leaves a goroutine unlinking files out from under a
@@ -384,13 +475,23 @@ func (t *Traffic) stopping() bool {
 func (t *Traffic) DB() *sql.DB { return t.db }
 
 // sink is the go-mitmproxy addon that records completed exchanges.
+// guard 指向本 sink 所属实例的策略：白名单只对被动实例生效，Agent 实例的 guard
+// 永远为空，所以它的流量无条件入库。
 type sink struct {
 	mproxy.BaseAddon
-	t *Traffic
+	t     *Traffic
+	guard *atomic.Pointer[proxyGuard]
 }
 
 func (s *sink) Response(f *mproxy.Flow) {
 	if f.Request == nil || f.Response == nil {
+		return
+	}
+	// 白名单外的流量不入库。SetShouldInterceptRule 只挡得住 HTTPS 解密，明文 HTTP
+	// 请求走的是直接转发路径、仍然会到这里，所以记录这一侧必须自己再判一次；
+	// 否则“只记名单内域名”在最常见的情形（http:// 目标）下形同虚设。
+	// 只问本实例的 guard：Agent 侧永远为空 guard → 全部记录。
+	if f.Request.URL != nil && !guardAllows(s.guard.Load(), f.Request.URL.Hostname()) {
 		return
 	}
 	s.t.record(f)
