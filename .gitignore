@@ -71,3 +71,14 @@ Thumbs.db
 # 接口文档的本地导出压缩包：内容都是 docs/openapi.json、docs/swagger.html 与
 # gen-integration-docx.py 产物的打包，重复入库只会让仓库变大且必然过期
 /artex接口文档.zip
+
+# 第三方安装脚本在项目根误跑留下的产物：qodercli 的 install.cmd 把
+# 「echo == xxx」重定向成了同名文件，与本项目无关，不入库
+/install.cmd
+/Checksum
+/Downloading
+/Extracting
+/Fetching
+/Installing
+/Latest
+/Verifying

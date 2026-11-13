@@ -1289,6 +1289,24 @@ export interface MCPTool {
   description: string;
 }
 
+export interface MCPAccessToken {
+  id: number;
+  name: string;
+  prefix: string;
+  tools: string[];
+  enabled: boolean;
+  created_at: string;
+  last_used_at?: string;
+}
+
+export interface MCPAccessTool {
+  name: string;
+  description: string;
+  read_only: boolean;
+  default_selected: boolean;
+  dangerous: boolean;
+}
+
 // ---- Skills ----
 // Fields align with the agentskills.io open specification.
 // description covers both "what the skill does" and "when to use it".

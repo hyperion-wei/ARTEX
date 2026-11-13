@@ -878,6 +878,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/mcp/{id}", s.pgDeleteMCP)
 	mux.HandleFunc("GET /api/mcp/{id}/tools", s.pgMCPTools)
 	mux.HandleFunc("POST /api/mcp/{id}/refresh", s.pgRefreshMCP)
+	// 对外开放 MCP 的访问令牌与可导出工具目录
+	mux.HandleFunc("GET /api/mcp-access/tools", s.pgMCPAccessTools)
+	mux.HandleFunc("GET /api/mcp-access/tokens", s.pgListMCPAccessTokens)
+	mux.HandleFunc("POST /api/mcp-access/tokens", s.pgCreateMCPAccessToken)
+	mux.HandleFunc("PATCH /api/mcp-access/tokens/{id}", s.pgUpdateMCPAccessToken)
+	mux.HandleFunc("DELETE /api/mcp-access/tokens/{id}", s.pgDeleteMCPAccessToken)
 	// 资产同步 — ScopeSentry 数据源
 	mux.HandleFunc("GET /api/sync/scopesentry/status", s.syncSSStatus)
 	mux.HandleFunc("POST /api/sync/scopesentry/datasource", s.syncSSDatasource)
@@ -948,6 +954,7 @@ func (s *Server) Handler() http.Handler {
 	api := cors(s.requireAuth(mux))
 	root := http.NewServeMux()
 	root.Handle("/api/", api)
+	root.Handle("/mcp", cors(http.HandlerFunc(s.handleMCP)))
 	root.Handle("/", s.webuiHandler())
 	return root
 }
@@ -3891,7 +3898,7 @@ func cors(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(204)
 			return

@@ -9,6 +9,7 @@ DELETE /api/exploration/findings/{id}
 DELETE /api/intercept/rules/{id}
 DELETE /api/llm/profiles/{id}
 DELETE /api/llm/records
+DELETE /api/mcp-access/tokens/{id}
 DELETE /api/mcp/{id}
 DELETE /api/notify/channels/{id}
 DELETE /api/skills/{name}
@@ -93,6 +94,8 @@ GET /api/logs
 GET /api/logs/history
 GET /api/logs/stream
 GET /api/mcp
+GET /api/mcp-access/tools
+GET /api/mcp-access/tokens
 GET /api/mcp/{id}/tools
 GET /api/notify/channels
 GET /api/notify/deliveries
@@ -148,6 +151,7 @@ PATCH /api/agents/{key}
 PATCH /api/conversations/{id}
 PATCH /api/conversations/{id}/profile
 PATCH /api/exploration/findings/{id}
+PATCH /api/mcp-access/tokens/{id}
 PATCH /api/notify/channels/{id}
 PATCH /api/task-categories/{id}
 PATCH /api/task-templates/{id}
@@ -195,6 +199,7 @@ POST /api/llm/profiles/active
 POST /api/llm/retry-policy
 POST /api/llm/test
 POST /api/mcp
+POST /api/mcp-access/tokens
 POST /api/mcp/{id}/refresh
 POST /api/notify/channels
 POST /api/notify/channels/{id}/test

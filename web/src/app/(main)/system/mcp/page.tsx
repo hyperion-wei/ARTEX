@@ -1,27 +1,24 @@
 "use client";
 
 import * as React from "react";
-import { toast } from "sonner";
-import { PlusIcon, RefreshCwIcon, ServerIcon, Trash2Icon } from "lucide-react";
 
+import { PlusIcon, RefreshCwIcon, ServerIcon, Trash2Icon } from "lucide-react";
+import { toast } from "sonner";
+
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
-import { Badge } from "@/components/ui/badge";
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
-import { Checkbox } from "@/components/ui/checkbox";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import {
-  Sheet,
-  SheetContent,
-  SheetHeader,
-  SheetTitle,
-  SheetDescription,
-} from "@/components/ui/sheet";
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
-import type { MCPServer, MCPTool, Agent } from "@/lib/types";
+import type { Agent, MCPServer, MCPTool } from "@/lib/types";
+
+import { MCPAccessPanel } from "./access-server";
 
 type Transport = "stdio" | "http" | "sse";
 type FormState = {
@@ -56,9 +53,13 @@ export default function MCPPage() {
   const [tools, setTools] = React.useState<MCPTool[]>([]);
   const [toolsLoading, setToolsLoading] = React.useState(false);
   const [refreshing, setRefreshing] = React.useState(false);
+  const [pageTab, setPageTab] = React.useState<"servers" | "access">("servers");
 
   const load = React.useCallback(() => {
-    api.agents().then(setAgents).catch(() => {});
+    api
+      .agents()
+      .then(setAgents)
+      .catch(() => {});
     api
       .mcpServers()
       .then((ss) => {
@@ -300,10 +301,7 @@ export default function MCPPage() {
               onChange={(e) => setF({ url: e.target.value })}
             />
             <label className="flex items-center gap-2 text-sm">
-              <Checkbox
-                checked={form.insecure}
-                onCheckedChange={(v) => setF({ insecure: v === true })}
-              />
+              <Checkbox checked={form.insecure} onCheckedChange={(v) => setF({ insecure: v === true })} />
               跳过 TLS 证书校验（自签证书）
             </label>
           </div>
@@ -317,9 +315,7 @@ export default function MCPPage() {
           <Textarea
             id="m-env"
             className="font-mono"
-            placeholder={
-              form.transport !== "stdio" ? "Authorization=Bearer xxxx" : "API_KEY=xxxx\nFOO=bar"
-            }
+            placeholder={form.transport !== "stdio" ? "Authorization=Bearer xxxx" : "API_KEY=xxxx\nFOO=bar"}
             value={form.env}
             onChange={(e) => setF({ env: e.target.value })}
           />
@@ -347,9 +343,7 @@ export default function MCPPage() {
               <div key={t.name} className="py-2.5">
                 <code className="font-mono text-sm">{t.name}</code>
                 {t.description && (
-                  <p className="text-muted-foreground mt-0.5 text-xs leading-relaxed">
-                    {t.description}
-                  </p>
+                  <p className="text-muted-foreground mt-0.5 text-xs leading-relaxed">{t.description}</p>
                 )}
               </div>
             ))}
@@ -366,79 +360,76 @@ export default function MCPPage() {
         <p className="text-muted-foreground text-sm">外部 MCP 工具服务器 · 按 Agent 授权可见</p>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <button
-          type="button"
-          onClick={openAdd}
-          className="text-foreground/70 border-foreground/70 hover:bg-muted/60 hover:shadow-sm flex min-h-[116px] flex-col items-center justify-center gap-2 rounded-xl border border-dashed transition"
-        >
-          <PlusIcon className="size-6" />
-          <span className="text-sm">添加 MCP</span>
-        </button>
+      <Tabs value={pageTab} onValueChange={(value) => setPageTab(value as "servers" | "access")}>
+        <TabsList>
+          <TabsTrigger value="servers">外部 MCP</TabsTrigger>
+          <TabsTrigger value="access">对外开放</TabsTrigger>
+        </TabsList>
+        <TabsContent value="servers" className="mt-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <button
+              type="button"
+              onClick={openAdd}
+              className="text-foreground/70 border-foreground/70 hover:bg-muted/60 hover:shadow-sm flex min-h-[116px] flex-col items-center justify-center gap-2 rounded-xl border border-dashed transition"
+            >
+              <PlusIcon className="size-6" />
+              <span className="text-sm">添加 MCP</span>
+            </button>
 
-        {servers.map((s) => (
-          <Card
-            key={s.id}
-            onClick={() => openEdit(s)}
-            className="hover:border-primary/60 cursor-pointer gap-3 transition hover:shadow-sm"
-          >
-            <CardHeader>
-              <div className="flex items-center gap-2">
-                <ServerIcon className="text-muted-foreground size-4 shrink-0" />
-                <CardTitle className="truncate text-base">{s.name}</CardTitle>
-                <Badge variant="outline" className="uppercase">
-                  {s.transport}
-                </Badge>
-                <div className="ml-auto flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
-                  <Switch
-                    checked={s.enabled}
-                    onCheckedChange={() => toggleEnabled(s)}
-                    aria-label="启用"
-                  />
-                  <Button
-                    size="icon"
-                    variant="outline"
-                    aria-label="删除"
-                    onClick={() => removeServer(s)}
-                  >
-                    <Trash2Icon className="text-destructive" />
-                  </Button>
-                </div>
-              </div>
-            </CardHeader>
-            <CardContent className="grid gap-3">
-              <p className="text-muted-foreground text-sm">
-                {s.tools && s.tools.length > 0 ? `${s.tools.length} 个工具` : "尚未发现工具"}
-              </p>
-              <div className="grid gap-2" onClick={(e) => e.stopPropagation()}>
-                <span className="text-muted-foreground text-xs">可见性（按 Agent 授权）</span>
-                <div className="flex flex-wrap gap-x-4 gap-y-2">
-                  {agents.map((a) => (
-                    <label key={a.key} className="flex items-center gap-2 text-sm">
-                      <Checkbox
-                        checked={(visibility[s.id] ?? []).includes(a.id)}
-                        onCheckedChange={() => toggleVisibility(s.id, a.id, a.name)}
-                      />
-                      {a.name}
-                    </label>
-                  ))}
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        ))}
-      </div>
+            {servers.map((s) => (
+              <Card
+                key={s.id}
+                onClick={() => openEdit(s)}
+                className="hover:border-primary/60 cursor-pointer gap-3 transition hover:shadow-sm"
+              >
+                <CardHeader>
+                  <div className="flex items-center gap-2">
+                    <ServerIcon className="text-muted-foreground size-4 shrink-0" />
+                    <CardTitle className="truncate text-base">{s.name}</CardTitle>
+                    <Badge variant="outline" className="uppercase">
+                      {s.transport}
+                    </Badge>
+                    <div className="ml-auto flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                      <Switch checked={s.enabled} onCheckedChange={() => toggleEnabled(s)} aria-label="启用" />
+                      <Button size="icon" variant="outline" aria-label="删除" onClick={() => removeServer(s)}>
+                        <Trash2Icon className="text-destructive" />
+                      </Button>
+                    </div>
+                  </div>
+                </CardHeader>
+                <CardContent className="grid gap-3">
+                  <p className="text-muted-foreground text-sm">
+                    {s.tools && s.tools.length > 0 ? `${s.tools.length} 个工具` : "尚未发现工具"}
+                  </p>
+                  <div className="grid gap-2" onClick={(e) => e.stopPropagation()}>
+                    <span className="text-muted-foreground text-xs">可见性（按 Agent 授权）</span>
+                    <div className="flex flex-wrap gap-x-4 gap-y-2">
+                      {agents.map((a) => (
+                        <label key={a.key} className="flex items-center gap-2 text-sm">
+                          <Checkbox
+                            checked={(visibility[s.id] ?? []).includes(a.id)}
+                            onCheckedChange={() => toggleVisibility(s.id, a.id, a.name)}
+                          />
+                          {a.name}
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        </TabsContent>
+        <TabsContent value="access" className="mt-4">
+          <MCPAccessPanel />
+        </TabsContent>
+      </Tabs>
 
       <Sheet open={open} onOpenChange={setOpen}>
-        <SheetContent
-          side="right"
-          className="w-full data-[side=right]:sm:max-w-lg"
-        >
+        <SheetContent side="right" className="w-full data-[side=right]:sm:max-w-lg">
           <SheetHeader>
             <SheetTitle>{editing ? editing.name : "添加 MCP 服务器"}</SheetTitle>
-            <SheetDescription>
-              stdio（本地起进程）或 http（远程 Streamable HTTP）
-            </SheetDescription>
+            <SheetDescription>stdio（本地起进程）或 http（远程 Streamable HTTP）</SheetDescription>
           </SheetHeader>
 
           {editing ? (
@@ -449,9 +440,7 @@ export default function MCPPage() {
             >
               <TabsList>
                 <TabsTrigger value="config">配置</TabsTrigger>
-                <TabsTrigger value="tools">
-                  工具列表{tools.length ? `（${tools.length}）` : ""}
-                </TabsTrigger>
+                <TabsTrigger value="tools">工具列表{tools.length ? `（${tools.length}）` : ""}</TabsTrigger>
               </TabsList>
               <TabsContent value="config" className="min-h-0 flex-1 overflow-y-auto">
                 {renderForm()}

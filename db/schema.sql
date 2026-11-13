@@ -908,6 +908,21 @@ CREATE TABLE IF NOT EXISTS mcp_tools_cache (
     UNIQUE (server_id, tool_name)
 );
 
+CREATE TABLE IF NOT EXISTS mcp_access_tokens (
+    id           BIGSERIAL PRIMARY KEY,
+    name         TEXT NOT NULL,
+    token_hash   TEXT NOT NULL UNIQUE,
+    token_prefix TEXT NOT NULL,
+    tools        JSONB NOT NULL DEFAULT '[]',
+    enabled      BOOLEAN NOT NULL DEFAULT true,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_used_at TIMESTAMPTZ
+);
+DROP TRIGGER IF EXISTS trg_mcp_access_tokens_upd ON mcp_access_tokens;
+CREATE TRIGGER trg_mcp_access_tokens_upd BEFORE UPDATE ON mcp_access_tokens
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
 -- =====================================================================
 -- G. 可见性：agent × mcp / skill
 -- =====================================================================

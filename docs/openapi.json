@@ -3,7 +3,7 @@
   "info": {
     "title": "ARTEX API",
     "version": "0.3.15",
-    "description": "ARTEX —— AI 自主渗透测试系统后端 HTTP API。\n\n**鉴权**:除 `/api/auth/*`(登录/初始化/改密/状态)外,所有接口均需 JWT。三种携带方式:\n1. 请求头 `Authorization: Bearer <token>`(常规请求);\n2. Cookie `artex_token`(浏览器自动携带);\n3. 查询参数 `?token=<token>`(仅建议用于 SSE 流式接口,浏览器 EventSource 无法自定义请求头)。\n\nToken 通过 `POST /api/auth/login` 获取(HS256,有效期 7 天);首次使用需 `POST /api/auth/init` 初始化账号。\n\n**响应约定**:成功响应直接返回业务数据(无统一信封,列表接口多为 JSON 数组);\n错误响应统一为 `{\"error\": \"<message>\"}`,HTTP 状态码见各接口定义(400 参数错误 / 401 未认证 / 404 不存在 / 409 状态冲突 / 500 服务端错误)。\n\n**SSE 流式接口**:路径带 `/stream`、`/events` 的接口返回 `text/event-stream`,事件通过 `data:` 行携带 JSON。\n\n**路径参数约定**:`{id}` 型任务 ID 除数字 ID 外普遍支持 `active`(当前活跃任务),详见各接口说明。\n\n共 282 个操作,204 个路径。默认服务地址 http://localhost:8787。"
+    "description": "ARTEX —— AI 自主渗透测试系统后端 HTTP API。\n\n**鉴权**:除 `/api/auth/*`(登录/初始化/改密/状态)外,所有接口均需 JWT。三种携带方式:\n1. 请求头 `Authorization: Bearer <token>`(常规请求);\n2. Cookie `artex_token`(浏览器自动携带);\n3. 查询参数 `?token=<token>`(仅建议用于 SSE 流式接口,浏览器 EventSource 无法自定义请求头)。\n\nToken 通过 `POST /api/auth/login` 获取(HS256,有效期 7 天);首次使用需 `POST /api/auth/init` 初始化账号。\n\n**响应约定**:成功响应直接返回业务数据(无统一信封,列表接口多为 JSON 数组);\n错误响应统一为 `{\"error\": \"<message>\"}`,HTTP 状态码见各接口定义(400 参数错误 / 401 未认证 / 404 不存在 / 409 状态冲突 / 500 服务端错误)。\n\n**SSE 流式接口**:路径带 `/stream`、`/events` 的接口返回 `text/event-stream`,事件通过 `data:` 行携带 JSON。\n\n**路径参数约定**:`{id}` 型任务 ID 除数字 ID 外普遍支持 `active`(当前活跃任务),详见各接口说明。\n\n共 288 个操作,208 个路径。默认服务地址 http://localhost:8787。"
   },
   "servers": [
     {
@@ -171,6 +171,10 @@
     {
       "name": "asset-intercept",
       "description": "资产拦截规则"
+    },
+    {
+      "name": "mcp-access",
+      "description": "mcp-access"
     }
   ],
   "components": {
@@ -10419,6 +10423,125 @@
           "agent_id",
           "skill_name",
           "visible"
+        ]
+      },
+      "MCPAccessToken": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "prefix": {
+            "type": "string",
+            "description": "用于展示的 Token 前缀"
+          },
+          "tools": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "last_used_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "prefix",
+          "tools",
+          "enabled",
+          "created_at"
+        ]
+      },
+      "MCPAccessTool": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "read_only": {
+            "type": "boolean"
+          },
+          "default_selected": {
+            "type": "boolean"
+          },
+          "dangerous": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "description",
+          "read_only",
+          "default_selected",
+          "dangerous"
+        ]
+      },
+      "MCPAccessTokenCreate": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 64,
+            "description": "缺省为 Agent Token"
+          },
+          "tools": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "省略使用默认授权；空数组表示不授权任何工具"
+          }
+        }
+      },
+      "MCPAccessTokenUpdate": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 64
+          },
+          "tools": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "enabled": {
+            "type": "boolean"
+          }
+        }
+      },
+      "MCPAccessTokenCreated": {
+        "type": "object",
+        "properties": {
+          "token": {
+            "type": "string",
+            "description": "仅本次返回的完整 Token"
+          },
+          "access_token": {
+            "$ref": "#/components/schemas/MCPAccessToken"
+          }
+        },
+        "required": [
+          "token",
+          "access_token"
         ]
       },
       "InterceptRule": {
@@ -30198,6 +30321,326 @@
           },
           "503": {
             "description": "管理后台数据源(PostgreSQL)未连接",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/mcp-access/tools": {
+      "get": {
+        "tags": [
+          "mcp-access"
+        ],
+        "summary": "列出可对外开放的 MCP 工具",
+        "description": "返回当前启用且绑定 Auto 的领域、任务编排和平台工具。default_selected=false 的高风险平台管理工具默认不授权；SDK 文件/Shell 工具、Skill、入向 MCP 和自定义 host 工具不出现在目录中。report_finding 需要任务内探索图，不对外导出。",
+        "operationId": "listMCPAccessTools",
+        "responses": {
+          "200": {
+            "description": "可导出工具目录",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "tools": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/MCPAccessTool"
+                      }
+                    },
+                    "default_tools": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "管理后台数据源不可用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/mcp-access/tokens": {
+      "get": {
+        "tags": [
+          "mcp-access"
+        ],
+        "summary": "列出 MCP 访问 Token",
+        "description": "只返回 Token 元数据和前缀，不返回完整 Token 或哈希。",
+        "operationId": "listMCPAccessTokens",
+        "responses": {
+          "200": {
+            "description": "Token 列表",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "tokens": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/MCPAccessToken"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "mcp-access"
+        ],
+        "summary": "一键创建 MCP 访问 Token",
+        "description": "生成 32 字节随机 Token，数据库只保存 SHA-256 哈希。完整 Token 仅在本次响应返回一次。省略 tools 时使用默认安全授权；显式传空数组则创建无工具权限的 Token。",
+        "operationId": "createMCPAccessToken",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MCPAccessTokenCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "创建成功，包含一次性明文",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MCPAccessTokenCreated"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "名称或工具白名单无效",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/mcp-access/tokens/{id}": {
+      "patch": {
+        "tags": [
+          "mcp-access"
+        ],
+        "summary": "修改 MCP Token 名称、授权或启用状态",
+        "operationId": "updateMCPAccessToken",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MCPAccessTokenUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "更新成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "access_token": {
+                      "$ref": "#/components/schemas/MCPAccessToken"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Token 不存在",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "mcp-access"
+        ],
+        "summary": "删除 MCP Token",
+        "description": "删除后使用该 Token 的外部 Agent 立即无法访问 /mcp。",
+        "operationId": "deleteMCPAccessToken",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "删除成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "deleted": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Token 不存在",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/mcp": {
+      "post": {
+        "tags": [
+          "mcp-access"
+        ],
+        "summary": "ARTEX Streamable HTTP MCP 端点",
+        "description": "无会话的 JSON-RPC 2.0 over HTTP POST。Authorization 必须使用创建时获得的 Bearer MCP Token，不支持页面 JWT 或 query token。支持 initialize、notifications/initialized、ping、tools/list、tools/call；通知返回 202，普通 JSON-RPC 响应返回 application/json。",
+        "operationId": "callArtexMCP",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "jsonrpc": {
+                    "type": "string",
+                    "enum": [
+                      "2.0"
+                    ]
+                  },
+                  "id": {
+                    "description": "字符串或数字请求 ID；通知省略"
+                  },
+                  "method": {
+                    "type": "string",
+                    "enum": [
+                      "initialize",
+                      "notifications/initialized",
+                      "ping",
+                      "tools/list",
+                      "tools/call"
+                    ]
+                  },
+                  "params": {
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "jsonrpc",
+                  "method"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "JSON-RPC 响应",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "通知已接受"
+          },
+          "401": {
+            "description": "Token 缺失、无效或已停用",
             "content": {
               "application/json": {
                 "schema": {

@@ -68,6 +68,8 @@ import type {
   LLMTask,
   MCPServer,
   MCPTool,
+  MCPAccessToken,
+  MCPAccessTool,
   MissingSkill,
   ModelTokenStat,
   NotificationChannel,
@@ -1155,6 +1157,13 @@ export const api = {
   deleteMcpServer: (id: number) => del<{ deleted: number }>(`/mcp/${id}`),
   mcpTools: (id: number) => get<{ tools: MCPTool[] }>(`/mcp/${id}/tools`).then((r) => arr(r.tools)),
   refreshMcpServer: (id: number) => post<{ tools: MCPTool[] }>(`/mcp/${id}/refresh`, {}).then((r) => arr(r.tools)),
+  mcpAccessTools: () => get<{ tools: MCPAccessTool[]; default_tools: string[] }>("/mcp-access/tools"),
+  mcpAccessTokens: () => get<{ tokens: MCPAccessToken[] }>("/mcp-access/tokens").then((r) => arr(r.tokens)),
+  createMCPAccessToken: (body: { name?: string; tools?: string[] } = {}) =>
+    post<{ token: string; access_token: MCPAccessToken }>("/mcp-access/tokens", body),
+  updateMCPAccessToken: (id: number, body: { name?: string; tools?: string[]; enabled?: boolean }) =>
+    patch<{ access_token: MCPAccessToken }>(`/mcp-access/tokens/${id}`, body),
+  deleteMCPAccessToken: (id: number) => del<{ deleted: number }>(`/mcp-access/tokens/${id}`),
 
   // ---- 资产同步 (ScopeSentry 数据源) ----
   ssStatus: () =>
